@@ -1,0 +1,151 @@
+#!/bin/bash
+# ephedrine: set up or remove the Ephedrine menu bar app and its Claude Code hooks.
+set -euo pipefail
+
+BUNDLE_ID="io.github.3xyy.ephedrine"
+ROOT="$(cd "$(dirname "$(realpath "$0")")/.." && pwd)"   # Homebrew prefix, or a git clone
+APP="$HOME/Applications/Ephedrine.app"
+DATA="$HOME/.claude/ephedrine"
+SETTINGS="$HOME/.claude/settings.json"
+SUDOERS="/etc/sudoers.d/ephedrine"
+
+if [ -d "$ROOT/Ephedrine.app" ]; then            # installed by Homebrew
+    SRC_APP="$ROOT/Ephedrine.app"; SRC_HOOK="$ROOT/libexec/hook.sh"
+elif [ -f "$ROOT/Package.swift" ]; then          # running from a clone
+    SRC_APP=""; SRC_HOOK="$ROOT/scripts/hook.sh"
+else
+    echo "ephedrine: can't find the app next to $0" >&2; exit 1
+fi
+
+usage() {
+    cat <<EOF
+usage: ephedrine <command>
+
+  setup       install the app in ~/Applications, add the Claude Code hooks, start it
+              (run it again after \`brew upgrade ephedrine\`)
+  uninstall   remove the app and the hooks (keeps the log and your settings)
+  status      what's installed and running
+  logs        follow the log
+  version     print the version
+EOF
+}
+
+quit_app() {
+    pgrep -xq Ephedrine || return 0
+    osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+    for _ in 1 2 3 4 5; do pgrep -xq Ephedrine || return 0; sleep 1; done
+    pkill -x Ephedrine 2>/dev/null || true   # SIGTERM still runs its cleanup
+    sleep 1
+}
+
+# Add (or remove, with "remove") our entries in ~/.claude/settings.json.
+# Other hooks are left alone; a backup is written first.
+edit_hooks() {
+    command -v python3 >/dev/null || { echo "ephedrine: python3 is needed to edit $SETTINGS (xcode-select --install)" >&2; exit 1; }
+    python3 - "$SETTINGS" "$DATA/hook.sh" "${1:-add}" <<'PY'
+import json, os, shutil, sys
+
+path, hook, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+# PreToolUse gets a 2h lease: one long tool call (a build, a subagent) fires no
+# hooks while it runs. PostToolUse/Stop shorten or clear it right after.
+wanted = {
+    "UserPromptSubmit": f"{hook} busy 300",
+    "PreToolUse":       f"{hook} busy 7200",
+    "PostToolUse":      f"{hook} busy 300",
+    "Stop":             f"{hook} idle",
+    "SessionEnd":       f"{hook} idle",
+}
+ours = lambda g: any("/.claude/ephedrine/hook.sh" in h.get("command", "") for h in g.get("hooks", []))
+
+data = {}
+if os.path.exists(path):
+    shutil.copy(path, path + ".bak")
+    with open(path) as f:
+        data = json.load(f)
+hooks = data.setdefault("hooks", {})
+for event in list(hooks):
+    hooks[event] = [g for g in hooks[event] if not ours(g)]
+    if not hooks[event]:
+        del hooks[event]
+if mode == "add":
+    for event, cmd in wanted.items():
+        entry = {"hooks": [{"type": "command", "command": cmd}]}
+        if event in ("PreToolUse", "PostToolUse"):
+            entry["matcher"] = ""
+        hooks.setdefault(event, []).append(entry)
+if not hooks:
+    del data["hooks"]
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+PY
+}
+
+cmd_setup() {
+    mkdir -p "$DATA/sessions"
+    cp "$SRC_HOOK" "$DATA/hook.sh"
+    chmod +x "$DATA/hook.sh"
+    edit_hooks add
+    echo "✓ Claude Code hooks added to $SETTINGS (backup: settings.json.bak)"
+
+    quit_app
+    mkdir -p "$HOME/Applications"
+    if [ -n "$SRC_APP" ]; then
+        rm -rf "$APP"
+        ditto "$SRC_APP" "$APP"
+    else
+        "$ROOT/scripts/bundle.sh" "$HOME/Applications"
+    fi
+    echo "✓ Installed $APP"
+    open "$APP"
+    echo "✓ Started. Look for the mug in the menu bar."
+    echo
+    echo "Claude Code sessions that are already open pick up the hooks after a restart."
+    echo "Optional: Settings → Lid closed lets it keep working with the lid shut."
+}
+
+cmd_uninstall() {
+    if [ -x "$APP/Contents/MacOS/Ephedrine" ]; then
+        quit_app
+        "$APP/Contents/MacOS/Ephedrine" --unregister-login-item 2>/dev/null || true
+    fi
+    rm -rf "$APP"
+    echo "✓ Removed $APP"
+    if [ -f "$SETTINGS" ]; then edit_hooks remove; echo "✓ Removed the hooks from $SETTINGS"; fi
+    rm -rf "$DATA/hook.sh" "$DATA/sessions"
+    # The app normally does this on quit; make sure sleep isn't left disabled.
+    if [ -f "$DATA/lid-sleep-disabled" ]; then
+        sudo -n /usr/bin/pmset -a disablesleep 0 2>/dev/null && rm -f "$DATA/lid-sleep-disabled"
+    fi
+    echo "  Kept the log ($DATA) and settings (defaults delete $BUNDLE_ID removes them)."
+    if [ -f "$SUDOERS" ]; then
+        echo
+        echo "Lid-closed mode was set up. Remove its sudo rule with:"
+        echo "  sudo rm $SUDOERS"
+    fi
+}
+
+cmd_status() {
+    echo "version:   $(cmd_version)"
+    if [ -d "$APP" ]; then echo "app:       $APP"; else echo "app:       not installed (run: ephedrine setup)"; fi
+    if pgrep -xq Ephedrine; then echo "running:   yes"; else echo "running:   no"; fi
+    if [ -f "$SETTINGS" ] && grep -q "/.claude/ephedrine/hook.sh" "$SETTINGS"; then echo "hooks:     installed"; else echo "hooks:     missing (run: ephedrine setup)"; fi
+    if [ -f "$SUDOERS" ]; then echo "lid mode:  set up"; else echo "lid mode:  not set up"; fi
+}
+
+cmd_version() {
+    local plist="$ROOT/Resources/Info.plist"
+    [ -n "$SRC_APP" ] && plist="$SRC_APP/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist"
+}
+
+case "${1:-}" in
+    setup)              cmd_setup ;;
+    uninstall)          cmd_uninstall ;;
+    status)             cmd_status ;;
+    logs)               tail -n 50 -F "$DATA/ephedrine.log" ;;
+    version|--version)  cmd_version ;;
+    ""|help|-h|--help)  usage ;;
+    *)                  usage >&2; exit 1 ;;
+esac

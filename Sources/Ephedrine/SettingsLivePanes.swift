@@ -1,0 +1,209 @@
+import SwiftUI
+import UniformTypeIdentifiers
+import UserNotifications
+import EphedrineCore
+
+/// Live controller state; `now` changes every second, which re-renders it.
+struct NowPane: View {
+    let controller: AppController
+    let now: Date
+    @State private var untilTime = Date().addingTimeInterval(8 * 3600)
+
+    enum Stay: Hashable { case off, indefinite, running, minutes(Int) }
+    enum Lid: Hashable { case off, untilOpen, hours(Int), indefinite, running }
+
+    var body: some View {
+        Section {
+                Label(controller.statusText(), systemImage: "info.circle")
+                if let lid = controller.lidStatusText() { Label(lid, systemImage: "laptopcomputer") }
+            }
+        Section("Stay awake") {
+                Picker("Stay awake", selection: Binding(get: { stayChoice }, set: setStay)) {
+                    Text("Off").tag(Stay.off)
+                    Text("Until I turn it off").tag(Stay.indefinite)
+                    Text("For 30 minutes").tag(Stay.minutes(30))
+                    Text("For 1 hour").tag(Stay.minutes(60))
+                    Text("For 2 hours").tag(Stay.minutes(120))
+                    if let until = controller.keepAwakeUntil {
+                        Text("\(fmtDuration(Int(until.timeIntervalSinceNow))) left").tag(Stay.running)
+                    }
+                }
+                Tip("Keeps the Mac and the screen awake no matter what, say for a long chat in the browser or the Claude app.")
+            }
+        if controller.lidSetupOK {
+                Section("Stay awake with the lid closed") {
+                    Picker("Lid closed", selection: Binding(get: { lidChoice }, set: setLid)) {
+                        Text("Off").tag(Lid.off)
+                        Text("Until I open the lid").tag(Lid.untilOpen)
+                        ForEach([1, 2, 4, 8], id: \.self) { h in Text(h == 1 ? "For 1 hour" : "For \(h) hours").tag(Lid.hours(h)) }
+                        Text("Until I turn it off").tag(Lid.indefinite)
+                        if case .until(let d)? = controller.lidState.session {
+                            Text("Until \(clockStr(d)), \(fmtDuration(Int(d.timeIntervalSinceNow))) left").tag(Lid.running)
+                        }
+                    }
+                    HStack {
+                        DatePicker("Until a time", selection: $untilTime, displayedComponents: .hourAndMinute)
+                        Button("Start") { controller.startLid(.until(nextOccurrence(ofTimeIn: untilTime, after: Date()))) }
+                    }
+                    Tip("“Until I open the lid” turns itself off when you next open it, so the next close sleeps as usual.")
+                }
+            }
+        Section {
+                Button(controller.awayMode ? "I'm back, restore my apps" : "I'm leaving: pause apps and dim the screen") { controller.toggleAway() }
+                Tip("Pauses other apps and turns the screen black, but keeps the Mac awake so Claude keeps working. Move the mouse or type to restore everything.")
+                Button("Claude is done, stop waiting for it") { controller.resetIdle() }
+                Tip("Use after cancelling Claude with Ctrl-C (which sends no signal), so the Mac doesn't stay awake waiting for it.")
+        }
+    }
+
+    private var stayChoice: Stay {
+        controller.manualKeepAwake ? .indefinite : (controller.keepAwakeUntil != nil ? .running : .off)
+    }
+    private func setStay(_ c: Stay) {
+        switch c {
+        case .off: controller.stopStayAwake()
+        case .indefinite: controller.stayAwakeIndefinitely()
+        case .minutes(let m): controller.stayAwake(minutes: m)
+        case .running: break
+        }
+    }
+    private var lidChoice: Lid {
+        switch controller.lidState.session {
+        case nil: return .off
+        case .untilLidOpens?: return .untilOpen
+        case .indefinite?: return .indefinite
+        case .until?: return .running
+        }
+    }
+    private func setLid(_ c: Lid) {
+        switch c {
+        case .off: controller.stopLidSession()
+        case .untilOpen: controller.startLid(.untilLidOpens)
+        case .hours(let h): controller.startLid(.until(Date().addingTimeInterval(TimeInterval(h * 3600))))
+        case .indefinite: controller.startLid(.indefinite)
+        case .running: break
+        }
+    }
+}
+
+struct LidPane: View {
+    @ObservedObject var settings: AppSettings
+    let controller: AppController
+    let now: Date   // re-renders each second, so setup finishing shows up
+
+    var body: some View {
+        if !controller.lidSetupOK {
+                Section {
+                    Text("A MacBook sleeps the moment its lid closes, even while Claude is working. Setup installs a one-line rule (\(lidSudoersPath)) that lets Ephedrine switch macOS's “disable sleep” setting on and off without a password. Nothing else gets admin rights.")
+                    Button("Set up lid-closed mode…") { controller.setupLid() }
+                    Tip("Asks for your password once.")
+                }
+        } else {
+                Section {
+                    Toggle(isOn: $settings.lidWhileClaude) {
+                        Text("While Claude is working")
+                        Tip("Close the lid and Claude keeps going, error retries and usage-limit waits included. A minute after it finishes, the Mac sleeps. Only while “Keep awake while Claude is working” is on.")
+                    }
+                    Toggle(isOn: $settings.lidLockOnClose) {
+                        Text("Lock the screen when the lid closes")
+                        Tip("The Mac stays awake with the lid shut, so macOS doesn't lock it by itself. Opening the lid shows the lock screen; Claude keeps working behind it.")
+                    }
+                    Toggle(isOn: $settings.lidPauseApps) {
+                        Text("Pause other apps while it's shut")
+                        Tip("Like “I'm leaving”. They resume when you open the lid. Not with an external display attached.")
+                    }
+                }
+                Section("Sleep anyway, even mid-task") {
+                    Picker("On battery", selection: $settings.lidBatteryFloor) {
+                        Text("Only when plugged in").tag(lidOnlyPluggedIn)
+                        ForEach(lidBatteryFloors.reversed(), id: \.self) { Text($0 == 0 ? "No limit" : "Stop at \($0)%").tag($0) }
+                    }
+                    Picker("Too hot at", selection: $settings.lidHeatLimit) {
+                        Text("Warm").tag(LidHeatLimit.warm)
+                        Text("Hot").tag(LidHeatLimit.hot)
+                        Text("Very hot").tag(LidHeatLimit.veryHot)
+                    }
+                    Tip("Right now: \(thermalStateText()). macOS doesn't give apps a temperature, so this is its own heat level, the one it slows the Mac down at. Warm can come from a long build; Hot usually means it's shut in a bag.")
+                    Picker("Lid shut longer than", selection: $settings.lidClosedCapHours) {
+                        Text("No limit").tag(0)
+                        ForEach([1, 2, 4, 8, 12], id: \.self) { Text($0 == 1 ? "1 hour" : "\($0) hours").tag($0) }
+                    }
+                    Tip("A backstop in case Claude looks busy for ages, say a stuck session. Lid sessions you start yourself run as chosen. When any of these hits with the lid shut, the Mac goes to sleep.")
+                }
+                Section {
+                    Button("Remove lid-closed setup…") { controller.removeLidSetup() }
+                    Tip("Deletes \(lidSudoersPath). Asks for your password.")
+                }
+        }
+    }
+}
+
+/// "Spotify" for com.spotify.client, else the bundle id.
+func appName(_ bundleID: String) -> String {
+    guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return bundleID }
+    return FileManager.default.displayName(atPath: url.path).replacingOccurrences(of: ".app", with: "")
+}
+
+struct AwayPane: View {
+    @ObservedObject var settings: AppSettings
+
+    var body: some View {
+        Section {
+            Text("“I'm leaving” pauses other apps and turns the screen black while keeping the Mac awake. Move the mouse or type to restore everything.")
+        }
+        Section("Always kept running") {
+            Text(AppController.awayKeepRunning.map(appName).filter { !$0.contains(".") }.sorted().joined(separator: ", "))
+                .foregroundStyle(.secondary)
+            Tip("Plus any browser, terminals and editors that can host Claude Code, and call apps.")
+        }
+        Section("Also keep running") {
+            if settings.awayKeepRunning.isEmpty { Tip("Nothing added.") }
+            ForEach(settings.awayKeepRunning, id: \.self) { id in
+                HStack {
+                    Text(appName(id))
+                    Spacer()
+                    Button(role: .destructive) { settings.awayKeepRunning.removeAll { $0 == id } } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless)
+                }
+            }
+            Button("Add app…") {
+                let panel = NSOpenPanel()
+                panel.allowedContentTypes = [.application]
+                panel.directoryURL = URL(fileURLWithPath: "/Applications")
+                panel.allowsMultipleSelection = true
+                guard panel.runModal() == .OK else { return }
+                for url in panel.urls { if let id = Bundle(url: url)?.bundleIdentifier { settings.addKeepRunning(id) } }
+            }
+        }
+    }
+}
+
+struct AboutPane: View {
+    let controller: AppController
+    let now: Date   // re-renders each second (terminal tab count, lid setup)
+    @State private var notifications = "Checking…"
+
+    var body: some View {
+        Group {
+            Section {
+                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")
+            }
+            Section("Permissions") {
+                LabeledContent("Notifications", value: notifications)
+                LabeledContent("Terminal control",
+                               value: terminalControlStatus(tabs: controller.terminalTabsSeen, error: controller.terminalScanError))
+                LabeledContent("Lid-closed mode", value: controller.lidSetupOK ? "Set up" : "Not set up")
+            }
+            Section {
+                Button("Setup & permissions…") { controller.openSetup() }
+            }
+            Section {
+                Button("Open log…") { controller.openLogs() }
+            }
+        }
+        .task {
+            let s = await UNUserNotificationCenter.current().notificationSettings()
+            notifications = s.authorizationStatus == .authorized ? "Allowed" : "Off, so the pre-sleep warning won't show"
+        }
+    }
+}

@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: swift build -c release
+      - name: Test
+        run: swift test
+      - name: Bundle the app
+        run: CODESIGN_IDENTITY=- scripts/bundle.sh "$RUNNER_TEMP"
+      - name: Check the scripts
+        run: |
+          bash -n scripts/ephedrine scripts/build.sh scripts/bundle.sh
+          sh -n scripts/hook.sh

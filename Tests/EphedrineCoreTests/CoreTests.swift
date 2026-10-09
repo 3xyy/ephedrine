@@ -1,0 +1,940 @@
+import Testing
+import Foundation
+@testable import EphedrineCore
+
+// ── Parsing ──
+
+@Test func parseISOMicroseconds() {
+    // The exact shape Anthropic's usage endpoint returns (6 fractional digits).
+    let d = parseISO("2026-06-30T01:20:00.943766+00:00")
+    #expect(d != nil)
+    #expect(abs(d!.timeIntervalSince1970 - 1782782400.943766) < 1.0)
+}
+
+@Test func parseISOVariants() {
+    #expect(parseISO("2026-06-30T01:20:00Z") != nil)
+    #expect(parseISO("2026-06-30T01:20:00+05:30") != nil)
+    #expect(parseISO("2026-06-30T01:20:00.5Z") != nil)
+    #expect(parseISO("not a date") == nil)
+}
+
+@Test func countdownFormatting() {
+    #expect(fmtCountdown(0) == "0s")
+    #expect(fmtCountdown(-5) == "0s")
+    #expect(fmtCountdown(59) == "59s")
+    #expect(fmtCountdown(60) == "1:00")
+    #expect(fmtCountdown(125) == "2:05")
+    #expect(fmtCountdown(3600) == "60:00")
+}
+
+@Test func markerExpiryParsing() {
+    #expect(markerExpiry(contents: "1750000000\n", mtime: nil, leaseFallback: 300) == 1750000000)
+    let m = Date(timeIntervalSince1970: 1000)
+    #expect(markerExpiry(contents: "garbage", mtime: m, leaseFallback: 300) == 1300)
+    #expect(markerExpiry(contents: nil, mtime: m, leaseFallback: 300) == 1300)
+    #expect(markerExpiry(contents: nil, mtime: nil, leaseFallback: 300) == nil)
+}
+
+@Test func appleScriptQuoting() {
+    #expect(appleScriptQuoted("continue") == "\"continue\"")
+    #expect(appleScriptQuoted("a\"b\\c") == "\"a\\\"b\\\\c\"")
+}
+
+// ── Auto-continue modes ──
+
+@Test func backoffDelaysCapAt300() {
+    let m = AutoContinueMode.backoff
+    #expect(m.delay(0) == 30)
+    #expect(m.delay(1) == 60)
+    #expect(m.delay(2) == 120)
+    #expect(m.delay(3) == 240)
+    #expect(m.delay(4) == 300)
+    #expect(m.delay(10) == 300)
+    #expect(m.maxAttempts == 8)
+}
+
+@Test func fastAndPersistentModes() {
+    #expect(AutoContinueMode.fast.delay(3) == 15)
+    #expect(AutoContinueMode.fast.maxAttempts == 5)
+    #expect(AutoContinueMode.persistent.delay(99) == 60)
+    #expect(AutoContinueMode.persistent.maxAttempts == Int.max)
+    #expect(AutoContinueMode.off.maxAttempts == 0)
+}
+
+// ── Terminal text classifiers ──
+
+let claudeErrorScreen = """
+● Working on the fix…
+
+API Error: unable to connect to API (ECONNREFUSED)
+
+╭──────────────────────────────────────────╮
+│ >                                        │
+╰──────────────────────────────────────────╯
+  ? for shortcuts
+"""
+
+@Test func claudeErrorDetectedOnRealErrorScreen() {
+    #expect(claudeErrorVisible(claudeErrorScreen))
+}
+
+@Test func claudeErrorIgnoredWhileWorking() {
+    let working = claudeErrorScreen + "\n✻ Compacting… (esc to interrupt)"
+    #expect(!claudeErrorVisible(working))
+}
+
+@Test func claudeErrorIgnoredInPlainShell() {
+    // npm failure in a normal shell: matches "connection refused" but there
+    // is no Claude UI on screen, so it must NOT trigger auto-continue.
+    let npm = """
+    npm ERR! network connection refused https://registry.npmjs.org/
+    npm ERR! A complete log of this run can be found in ~/.npm/_logs/…
+    user@mac myproject %
+    """
+    #expect(!claudeErrorVisible(npm))
+}
+
+// What the screen looked like when 4 "continue"s were typed during lid-closed dark wakes.
+let sleptScreen = """
+⏺ API Error: Your computer went to sleep mid-response. The response above may be incomplete.
+
+✻ Crunched for 1h 50m 41s · done 10:11 AM · 1 shell still running
+
+────────────────────────────────────────────
+❯
+────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)
+"""
+
+@Test func sleepErrorIsNotAnOutage() {
+    #expect(!claudeErrorVisible(sleptScreen))
+    let before = sleptScreen.replacingOccurrences(of: "went to sleep mid-response. The response above may be incomplete.",
+                                                  with: "went to sleep before a response was produced. Try again.")
+    #expect(!claudeErrorVisible(before))
+}
+
+let connectionLostScreen = """
+⏺ API Error: Connection lost mid-response. The response above may be incomplete.
+
+✻ Crunched for 3m 12s
+
+────────────────────────────────────────────
+❯
+────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)
+"""
+
+@Test func errorAnsweredOnlyOnce() {
+    #expect(claudeErrorVisible(connectionLostScreen))
+    // After our "continue" is submitted, the same error must not trigger again…
+    let answered = connectionLostScreen.replacingOccurrences(
+        of: "✻ Crunched for 3m 12s\n", with: "✻ Crunched for 3m 12s\n\n❯ continue\n")
+    #expect(!claudeErrorVisible(answered))
+    // …but a NEW error below that "continue" does.
+    let again = answered.replacingOccurrences(
+        of: "❯ continue\n", with: "❯ continue\n\n⏺ API Error: 529 overloaded\n")
+    #expect(claudeErrorVisible(again))
+}
+
+@Test func errorIgnoredWhileUserIsTyping() {
+    // Text in the input box: typing "continue" would append to it.
+    let typing = connectionLostScreen.replacingOccurrences(of: "\n❯", with: "\n❯ half-written question")
+    #expect(typing != connectionLostScreen)
+    #expect(!claudeErrorVisible(typing))
+}
+
+@Test func spinnerMeansWorking() {
+    // Claude Code 2.1.x spinner: random verb + ellipsis, no "esc to interrupt".
+    #expect(claudeWorkingVisible("✻ Crunching… (12s · ↓ 1.2k tokens)"))
+    #expect(claudeWorkingVisible("✶ Beboppin'… (3m 4s · ↑ 900 tokens · thinking)"))
+    #expect(claudeWorkingVisible("· Clauding…"))
+    #expect(!claudeWorkingVisible("✻ Crunched for 1h 50m 41s · done 10:11 AM"))
+    #expect(!claudeWorkingVisible("● Working on the fix…"))
+    #expect(!claudeWorkingVisible(sleptScreen))
+    // An error screen with the spinner still going is Claude retrying, so hands off.
+    #expect(!claudeErrorVisible(connectionLostScreen.replacingOccurrences(
+        of: "✻ Crunched for 3m 12s", with: "✻ Crunching… (3m 12s · ↓ 4k tokens)")))
+}
+
+@Test func claudeWorkingDetection() {
+    #expect(claudeWorkingVisible("✻ Thinking… (esc to interrupt)"))
+    #expect(claudeWorkingVisible("Waiting for the dynamic workflow to finish…"))
+    #expect(claudeWorkingVisible("Task is running in the background"))
+    #expect(!claudeWorkingVisible("user@mac ~ %"))
+}
+
+@Test func usageLimitDetection() {
+    // Current Claude Code wording (2.1.x): "You've hit your <name> · resets …"
+    for name in ["session limit", "weekly limit", "Opus limit", "Fable limit"] {
+        #expect(usageLimitVisible("You've hit your \(name) · resets 3am (America/Los_Angeles)"))
+    }
+    #expect(usageLimitVisible("You've reached your usage limit. Your limit resets 3:20am (America/Los_Angeles)."))
+    #expect(usageLimitVisible("Usage limit reached · continuing automatically at 3am · esc to cancel\nresets 3am"))
+    #expect(!usageLimitVisible("user@mac ~ % echo done"))
+    #expect(!usageLimitVisible("You've hit your session limit"))   // no reset → not the wall
+}
+
+let limitMenuStopFirst = """
+You've hit your session limit · resets 3am (America/Los_Angeles)
+
+❯ 1. Stop and wait for limit to reset
+  2. Upgrade your plan
+"""
+
+@Test func limitMenuPicksWaitNotUpgrade() {
+    #expect(limitMenuChoice(limitMenuStopFirst) == .waitForReset("1"))
+}
+
+@Test func limitMenuPicksByLabelWhenPaidOptionsComeFirst() {
+    // Claude Code sometimes lists the paid options first, so never pick by position.
+    let menu = """
+    You've hit your session limit · resets 3am (America/Los_Angeles)
+
+    ❯ 1. Switch to usage credits
+      2. Upgrade your plan
+      3. Stop and wait for limit to reset
+    """
+    #expect(limitMenuChoice(menu) == .waitForReset("3"))
+}
+
+@Test func limitMenuPrefersClaudeAutoContinue() {
+    let menu = """
+    You've hit your session limit · resets 3am (America/Los_Angeles)
+
+    ❯ 1. Stop and wait for limit to reset
+      2. Wait here, then continue automatically when the limit resets
+    """
+    #expect(limitMenuChoice(menu) == .claudeAutoContinue("2"))
+    // …but never the opt-out, which also says "continue automatically"
+    let optOut = """
+    ❯ 1. Don\u{2019}t continue automatically
+      2. Upgrade your plan
+    """
+    #expect(limitMenuChoice(optOut) == nil)
+}
+
+@Test func limitMenuWithoutWaitOptionPicksNothing() {
+    let menu = """
+    You've hit your session limit · resets 3am (America/Los_Angeles)
+
+    ❯ 1. Add funds to continue with usage credits
+      2. Upgrade your plan
+    """
+    #expect(limitMenuChoice(menu) == nil)
+    #expect(menuVisible(menu))
+}
+
+@Test func numberedProseIsNotAMenu() {
+    let prose = """
+    Here's the plan:
+      1. Stop and wait for limit to reset
+      2. Then continue
+    """
+    #expect(!menuVisible(prose))
+    #expect(limitMenuChoice(prose) == nil)
+}
+
+@Test func claudeAutoResumeDetection() {
+    #expect(claudeAutoResumeVisible("Usage limit reached · continuing automatically at 3am · esc to cancel"))
+    #expect(!claudeAutoResumeVisible(limitMenuStopFirst))
+}
+
+@Test func claudeUIVisibleInPermissionModes() {
+    // With a permission mode on, the footer replaces "? for shortcuts".
+    #expect(claudeUIVisible("────────\n❯ \n────────\n  ⏵⏵ auto mode on (shift+tab to cycle)"))
+    #expect(claudeUIVisible("  ⏸ plan mode on (shift+tab to cycle)"))
+    #expect(!claudeUIVisible("user@mac ~ %"))
+}
+
+@Test func autoContinueNeverTypesIntoAMenu() {
+    // An API error above an open permission prompt: "continue⏎" would pick option 1.
+    let screen = """
+    API Error: 529 overloaded
+    Do you want to run this command?
+    ❯ 1. Yes
+      2. No
+      ? for shortcuts
+    """
+    #expect(!claudeErrorVisible(screen))
+}
+
+// ── parseResetTime ──
+
+private func date(_ y: Int, _ mo: Int, _ d: Int, _ h: Int, _ mi: Int, tz: TimeZone) -> Date {
+    var cal = Calendar(identifier: .gregorian); cal.timeZone = tz
+    return cal.date(from: DateComponents(year: y, month: mo, day: d, hour: h, minute: mi))!
+}
+
+@Test func resetTimeSameDay() {
+    let tz = TimeZone(identifier: "America/Los_Angeles")!
+    let now = date(2026, 7, 23, 10, 0, tz: tz)
+    #expect(parseResetTime("resets 3:20pm (America/Los_Angeles)", now: now)
+            == date(2026, 7, 23, 15, 20, tz: tz))
+}
+
+@Test func resetTimeRollsToTomorrow() {
+    let tz = TimeZone(identifier: "America/Los_Angeles")!
+    let now = date(2026, 7, 23, 16, 0, tz: tz)
+    #expect(parseResetTime("resets 3:20pm (America/Los_Angeles)", now: now)
+            == date(2026, 7, 24, 15, 20, tz: tz))
+}
+
+@Test func resetTimeWithoutMinutes() {
+    let tz = TimeZone(identifier: "America/Los_Angeles")!
+    let now = date(2026, 7, 23, 1, 0, tz: tz)
+    #expect(parseResetTime("Your limit resets 3am (America/Los_Angeles)", now: now)
+            == date(2026, 7, 23, 3, 0, tz: tz))
+}
+
+@Test func resetTimeTwelveOClock() {
+    let tz = TimeZone(identifier: "America/Los_Angeles")!
+    let now = date(2026, 7, 23, 1, 0, tz: tz)
+    #expect(parseResetTime("resets 12:30pm (America/Los_Angeles)", now: now)
+            == date(2026, 7, 23, 12, 30, tz: tz))
+    // 12:30am is already past at 1:00am → tomorrow
+    #expect(parseResetTime("resets 12:30am (America/Los_Angeles)", now: now)
+            == date(2026, 7, 24, 0, 30, tz: tz))
+}
+
+@Test func resetTimeThreePartTimezone() {
+    let tz = TimeZone(identifier: "America/Argentina/Buenos_Aires")!
+    let now = date(2026, 7, 23, 1, 0, tz: tz)
+    #expect(parseResetTime("resets 3:20am (America/Argentina/Buenos_Aires)", now: now)
+            == date(2026, 7, 23, 3, 20, tz: tz))
+}
+
+@Test func resetTimeUTC() {
+    let tz = TimeZone(identifier: "UTC")!
+    let now = date(2026, 7, 23, 1, 0, tz: tz)
+    #expect(parseResetTime("resets at 9:00am (UTC)", now: now)
+            == date(2026, 7, 23, 9, 0, tz: tz))
+}
+
+@Test func resetTimeNoMatch() {
+    #expect(parseResetTime("nothing to see here") == nil)
+}
+
+@Test func resetTimeSkipsNonTimezoneParens() {
+    // An earlier parenthesized token must not shadow the real timezone.
+    let tz = TimeZone(identifier: "America/Los_Angeles")!
+    let now = date(2026, 7, 23, 1, 0, tz: tz)
+    #expect(parseResetTime("(esc) … resets 3:20am (America/Los_Angeles)", now: now)
+            == date(2026, 7, 23, 3, 20, tz: tz))
+}
+
+@Test func resetTimeUsesLastMatchInTail() {
+    // An older limit message earlier on screen must not win over the latest one.
+    let tz = TimeZone(identifier: "America/Los_Angeles")!
+    let now = date(2026, 7, 23, 1, 0, tz: tz)
+    let screen = "resets 2am (America/Los_Angeles)\n…\nYou've hit your session limit · resets 4am (America/Los_Angeles)"
+    #expect(parseResetTime(screen, now: now) == date(2026, 7, 23, 4, 0, tz: tz))
+}
+
+@Test func resetTimeFromClaudeAutoResume() {
+    let now = Date()
+    let r = parseResetTime("Usage limit reached · continuing automatically at 3am · esc to cancel", now: now)
+    #expect(r != nil && r! > now && r!.timeIntervalSince(now) <= 86400)
+}
+
+@Test func resetTimeFarDatesDontParse() {
+    // Weekly resets are shown as a date. Those are multi-day waits; don't parse them.
+    #expect(parseResetTime("You've hit your weekly limit · resets Oct 5, 12am (America/Los_Angeles)") == nil)
+}
+
+// ── Usage API ──
+
+// Captured from GET /api/oauth/usage (2026-09-29), trimmed.
+let usageJSON = """
+{
+ "five_hour": {"utilization": 38.0, "resets_at": "2026-09-29T08:10:00.121597+00:00"},
+ "seven_day": {"utilization": 21.0, "resets_at": "2026-10-05T00:00:00.121623+00:00"},
+ "seven_day_opus": null,
+ "limits": [
+  {"kind": "session", "group": "session", "percent": 38, "severity": "normal",
+   "resets_at": "2026-09-29T08:10:00.121597+00:00", "scope": null, "is_active": true},
+  {"kind": "weekly_all", "group": "weekly", "percent": 21, "severity": "normal",
+   "resets_at": "2026-10-05T00:00:00.121623+00:00", "scope": null, "is_active": false},
+  {"kind": "weekly_scoped", "group": "weekly", "percent": 0, "severity": "normal",
+   "resets_at": "2026-10-05T00:00:00+00:00",
+   "scope": {"model": {"id": null, "display_name": "Fable"}, "surface": null}, "is_active": false}
+ ]
+}
+"""
+
+private func json(_ s: String) -> [String: Any] {
+    try! JSONSerialization.jsonObject(with: s.data(using: .utf8)!) as! [String: Any]
+}
+
+@Test func usageParsesLimitsArrayIncludingFable() {
+    let l = parseUsageLimits(json(usageJSON))
+    #expect(l.map(\.label) == ["Session (5h)", "Weekly · all models", "Fable only"])
+    #expect(l.map(\.percent) == [38, 21, 0])
+    #expect(l[2].key == "weekly_scoped:Fable")
+    #expect(l[0].resetsAt == parseISO("2026-09-29T08:10:00Z"))   // rounded to the minute
+}
+
+@Test func usageFallsBackToLegacyKeys() {
+    let l = parseUsageLimits(json("""
+    {"five_hour": {"utilization": 55.5, "resets_at": "2026-09-29T08:09:59.636007+00:00"},
+     "seven_day": {"utilization": 10, "resets_at": null}}
+    """))
+    #expect(l.map(\.label) == ["Session (5h)", "Weekly · all models"])
+    #expect(l[0].percent == 55.5)
+    #expect(l[0].resetsAt == parseISO("2026-09-29T08:10:00Z"))
+    #expect(l[1].resetsAt == nil)
+}
+
+@Test func usageLevels() {
+    #expect(usageLevel(percent: 10) == .normal)
+    #expect(usageLevel(percent: 75) == .warning)
+    #expect(usageLevel(percent: 95) == .critical)
+    #expect(usageLevel(percent: 10, severity: "warning") == .warning)
+    #expect(usageLevel(percent: 10, severity: "critical") == .critical)
+    #expect(usageLevel(percent: 10, severity: "normal") == .normal)
+}
+
+@Test func usageAlertFiresOnceDespiteResetJitter() {
+    // resets_at jitters by <1s between fetches; that must not look like a new window.
+    var t = UsageAlertTracker()
+    let a = parseUsageLimits(json("""
+    {"limits": [{"kind": "session", "percent": 85, "resets_at": "2026-09-29T08:10:00.121597+00:00"}]}
+    """))
+    let b = parseUsageLimits(json("""
+    {"limits": [{"kind": "session", "percent": 86, "resets_at": "2026-09-29T08:09:59.636007+00:00"}]}
+    """))
+    #expect(t.check(a, threshold: 80).count == 1)
+    #expect(t.check(b, threshold: 80).isEmpty)
+    #expect(t.check(a, threshold: 0).isEmpty)
+}
+
+@Test func usageAlertRefiresOnNewWindowOrRecrossing() {
+    var t = UsageAlertTracker()
+    let w1 = [UsageLimit(key: "s", label: "S", percent: 90, resetsAt: Date(timeIntervalSince1970: 1000))]
+    let w2 = [UsageLimit(key: "s", label: "S", percent: 90, resetsAt: Date(timeIntervalSince1970: 20000))]
+    let low = [UsageLimit(key: "s", label: "S", percent: 5, resetsAt: Date(timeIntervalSince1970: 20000))]
+    #expect(t.check(w1, threshold: 80).count == 1)
+    #expect(t.check(w2, threshold: 80).count == 1)   // new window, still above
+    #expect(t.check(low, threshold: 80).isEmpty)
+    #expect(t.check(w2, threshold: 80).count == 1)   // crossed again
+}
+
+// ── Process-list classifiers ──
+
+@Test func idleShellNotRunning() {
+    let lines = [
+        "ttys000  501  501 -zsh",
+        "??         1    0 /sbin/launchd",
+    ]
+    #expect(!interactiveShellRunningCommand(psLines: lines))
+}
+
+@Test func foregroundCommandDetected() {
+    let lines = [
+        "ttys000  501  501 -zsh",
+        "ttys001  600  600 python3 train.py --epochs 100",
+    ]
+    #expect(interactiveShellRunningCommand(psLines: lines))
+}
+
+@Test func backgroundCommandIgnored() {
+    // pgid != tpgid → backgrounded, not the foreground job
+    let lines = [
+        "ttys001  600  700 python3 train.py",
+        "ttys001  700  700 -zsh",
+    ]
+    #expect(!interactiveShellRunningCommand(psLines: lines))
+}
+
+@Test func claudeTtyExcluded() {
+    // The tty hosting Claude (and all its subprocesses) must not count.
+    let lines = [
+        "ttys002  800  800 claude",
+        "ttys002  810  810 node /some/mcp-server.js",
+    ]
+    #expect(!interactiveShellRunningCommand(psLines: lines))
+}
+
+@Test func commMatching() {
+    #expect(processCommMatches(commLines: ["/usr/bin/ssh"], names: ["ssh"]))
+    #expect(!processCommMatches(commLines: ["/usr/bin/ssh-agent"], names: ["ssh"]))
+}
+
+@Test func monitorWatchNeedsLeadingExecutable() {
+    #expect(monitorRunning(commLines: [], commandLines: ["watch -n1 ls"]))
+    #expect(monitorRunning(commLines: [], commandLines: ["sudo watch df -h"]))
+    #expect(monitorRunning(commLines: [], commandLines: ["/opt/homebrew/bin/watch date"]))
+    // substring " watch " must no longer false-positive:
+    #expect(!monitorRunning(commLines: [], commandLines: ["vim notes-to watch later.txt"]))
+    #expect(monitorRunning(commLines: [], commandLines: ["tail -f /var/log/system.log"]))
+    #expect(monitorRunning(commLines: ["/usr/bin/top"], commandLines: []))
+}
+
+// ── Lid-closed mode ──
+
+private func lidIn(whileClaude: Bool = false, busy: Bool = false, closed: Bool = false,
+                   battery: Int? = 80, onBattery: Bool = true, floor: Int = 20,
+                   hot: Bool = false, at t: TimeInterval = 1000, cap: TimeInterval = 0) -> LidInputs {
+    LidInputs(whileClaude: whileClaude, claudeBusy: busy, lidClosed: closed, onBattery: onBattery,
+              batteryPercent: battery, batteryFloor: floor, hot: hot, closedCap: cap,
+              now: Date(timeIntervalSince1970: t))
+}
+
+@Test func lidOffWithNothingWantingIt() {
+    var s = LidState()
+    #expect(!stepLid(&s, lidIn()).disableSleep)
+    #expect(!stepLid(&s, lidIn(busy: true)).disableSleep)   // Claude busy but the setting is off
+}
+
+@Test func lidFollowsClaudeWithLinger() {
+    var s = LidState()
+    #expect(stepLid(&s, lidIn(whileClaude: true, busy: true, closed: true, at: 1000)).disableSleep)
+    // Claude stopped: stays on through the linger, then off
+    #expect(stepLid(&s, lidIn(whileClaude: true, busy: false, closed: true, at: 1000 + lidClaudeLinger - 1)).disableSleep)
+    #expect(!stepLid(&s, lidIn(whileClaude: true, busy: false, closed: true, at: 1000 + lidClaudeLinger + 1)).disableSleep)
+}
+
+@Test func lidUntilOpenEndsOnClosedToOpen() {
+    var s = LidState(session: .untilLidOpens)
+    #expect(stepLid(&s, lidIn(closed: false)).disableSleep)     // started with the lid open
+    #expect(stepLid(&s, lidIn(closed: true)).disableSleep)      // closed: stays awake
+    let o = stepLid(&s, lidIn(closed: false))                    // opened: done
+    #expect(!o.disableSleep)
+    #expect(o.sessionEnded == .lidOpened)
+    #expect(s.session == nil)
+}
+
+@Test func lidTimedSessionEnds() {
+    var s = LidState(session: .until(Date(timeIntervalSince1970: 2000)))
+    #expect(stepLid(&s, lidIn(closed: true, at: 1999)).disableSleep)
+    let o = stepLid(&s, lidIn(closed: true, at: 2000))
+    #expect(!o.disableSleep)
+    #expect(o.sessionEnded == .timeUp)
+}
+
+@Test func lidIndefiniteIgnoresLidOpening() {
+    var s = LidState(session: .indefinite)
+    _ = stepLid(&s, lidIn(closed: true))
+    #expect(stepLid(&s, lidIn(closed: false)).disableSleep)
+}
+
+@Test func lidLowBatteryTripsOnceAndLatchesWhileClosed() {
+    var s = LidState()
+    _ = stepLid(&s, lidIn(whileClaude: true, busy: true, closed: true, battery: 50))
+    let o = stepLid(&s, lidIn(whileClaude: true, busy: true, closed: true, battery: 20))
+    #expect(!o.disableSleep)
+    #expect(o.newlyTripped == .lowBattery)
+    // still low: no second notification
+    #expect(stepLid(&s, lidIn(whileClaude: true, busy: true, closed: true, battery: 19)).newlyTripped == nil)
+    // plugged in while the lid is still shut: stays off (don't re-arm in a bag)
+    #expect(!stepLid(&s, lidIn(whileClaude: true, busy: true, closed: true, battery: 19, onBattery: false)).disableSleep)
+    // lid opened with the guard clear: back on
+    #expect(stepLid(&s, lidIn(whileClaude: true, busy: true, closed: false, battery: 19, onBattery: false)).disableSleep)
+}
+
+@Test func lidGuardEndsOneOffSession() {
+    var s = LidState(session: .indefinite)
+    let o = stepLid(&s, lidIn(closed: true, hot: true))
+    #expect(!o.disableSleep)
+    #expect(o.newlyTripped == .hot)
+    #expect(o.sessionEnded == .hot)
+    #expect(s.session == nil)
+}
+
+@Test func lidGuardIgnoredWhenNothingWantsIt() {
+    var s = LidState()
+    #expect(stepLid(&s, lidIn(closed: true, battery: 5)).newlyTripped == nil)
+    #expect(s.tripped == nil)
+}
+
+@Test func lidBatteryGuardOffOrOnAC() {
+    var s = LidState(session: .indefinite)
+    #expect(stepLid(&s, lidIn(battery: 5, floor: 0)).disableSleep)                  // guard off
+    #expect(stepLid(&s, lidIn(battery: 5, onBattery: false)).disableSleep)          // on the adapter
+    #expect(stepLid(&s, lidIn(battery: nil)).disableSleep)                           // no battery (desktop)
+}
+
+@Test func lidOnlyWhenPluggedIn() {
+    var s = LidState()
+    #expect(stepLid(&s, lidIn(whileClaude: true, busy: true, closed: true, battery: 95,
+                              onBattery: false, floor: lidOnlyPluggedIn)).disableSleep)
+    let o = stepLid(&s, lidIn(whileClaude: true, busy: true, closed: true, battery: 95, floor: lidOnlyPluggedIn))
+    #expect(!o.disableSleep)
+    #expect(o.newlyTripped == .unplugged)
+}
+
+@Test func lidPluggedInOnlyEndsOneOffSessionOnBattery() {
+    var s = LidState(session: .indefinite)
+    let o = stepLid(&s, lidIn(battery: 95, floor: lidOnlyPluggedIn))
+    #expect(!o.disableSleep)
+    #expect(o.sessionEnded == .unplugged)
+}
+
+@Test func lidHeatLimits() {
+    #expect(!lidTooHot(.nominal, limit: .warm))
+    #expect(lidTooHot(.fair, limit: .warm))
+    #expect(!lidTooHot(.fair, limit: .hot))
+    #expect(lidTooHot(.serious, limit: .hot))     // the old fixed rule
+    #expect(!lidTooHot(.serious, limit: .veryHot))
+    #expect(lidTooHot(.critical, limit: .veryHot))
+}
+
+@Test func lidClosedCapStopsClaudeDrivenMode() {
+    var s = LidState()
+    let cap: TimeInterval = 3600
+    #expect(stepLid(&s, lidIn(whileClaude: true, busy: true, closed: true, at: 1000, cap: cap)).disableSleep)
+    #expect(stepLid(&s, lidIn(whileClaude: true, busy: true, closed: true, at: 1000 + cap - 1, cap: cap)).disableSleep)
+    let o = stepLid(&s, lidIn(whileClaude: true, busy: true, closed: true, at: 1000 + cap, cap: cap))
+    #expect(!o.disableSleep)
+    #expect(o.capReached)
+    // reported once per close
+    #expect(!stepLid(&s, lidIn(whileClaude: true, busy: true, closed: true, at: 1000 + cap + 3, cap: cap)).capReached)
+    // opening the lid resets the clock
+    #expect(stepLid(&s, lidIn(whileClaude: true, busy: true, closed: false, at: 1000 + cap + 6, cap: cap)).disableSleep)
+    #expect(stepLid(&s, lidIn(whileClaude: true, busy: true, closed: true, at: 1000 + cap + 9, cap: cap)).disableSleep)
+}
+
+@Test func lidClosedCapLeavesSessionsAlone() {
+    var s = LidState(session: .indefinite)
+    _ = stepLid(&s, lidIn(closed: true, at: 1000, cap: 3600))
+    let o = stepLid(&s, lidIn(closed: true, at: 1000 + 7200, cap: 3600))
+    #expect(o.disableSleep)
+    #expect(!o.capReached)
+}
+
+@Test func lidNoCapByDefault() {
+    var s = LidState()
+    _ = stepLid(&s, lidIn(whileClaude: true, busy: true, closed: true, at: 1000))
+    #expect(stepLid(&s, lidIn(whileClaude: true, busy: true, closed: true, at: 1000 + 86400)).disableSleep)
+}
+
+// 2026-10-07: switching disablesleep off with the lid already shut doesn't make
+// macOS clamshell-sleep, and the one sleep request was ignored. The Mac sat
+// awake with the lid shut for up to 55 minutes.
+private func stuck(_ w: inout LidSleepWatch, at t: TimeInterval, closed: Bool = true, disabled: Bool = false,
+                   awake: Bool = true, external: Bool = false, wanted: Bool = false, starting: Bool = false) -> Bool {
+    w.step(lidClosed: closed, sleepDisabled: disabled, fullyAwake: awake, externalDisplay: external,
+           lidWanted: wanted, sleepStarting: starting, now: Date(timeIntervalSince1970: t))
+}
+
+// 2026-10-08: macOS posted willSleep at once but slept 30s later (paused apps
+// can't answer the sleep notice), and the watch asked again in between.
+@Test func sleepWatchWaitsOutASleepAlreadyUnderway() {
+    var w = LidSleepWatch()
+    for t in stride(from: 1000.0, through: 1030, by: 3) { #expect(!stuck(&w, at: t, starting: true)) }
+    #expect(!stuck(&w, at: 1033))                                  // settle starts over after it
+    #expect(stuck(&w, at: 1033 + LidSleepWatch.settle))
+}
+
+@Test func sleepWatchRetriesWhenStillAwakeWithLidShut() {
+    var w = LidSleepWatch()
+    #expect(!stuck(&w, at: 1000))
+    #expect(!stuck(&w, at: 1000 + LidSleepWatch.settle - 1))
+    #expect(stuck(&w, at: 1000 + LidSleepWatch.settle))
+    // throttled
+    #expect(!stuck(&w, at: 1000 + LidSleepWatch.settle + 3))
+    #expect(stuck(&w, at: 1000 + LidSleepWatch.settle + LidSleepWatch.retryEvery))
+}
+
+@Test func sleepWatchQuietWhenAwakeOnPurpose() {
+    var w = LidSleepWatch()
+    for t in stride(from: 1000.0, through: 1200, by: 3) {
+        #expect(!stuck(&w, at: t, closed: false))        // lid open
+        #expect(!stuck(&w, at: t, disabled: true))       // lid-closed mode holding it
+        #expect(!stuck(&w, at: t, awake: false))         // dark wake: macOS handles it
+        #expect(!stuck(&w, at: t, external: true))       // clamshell desk setup
+        #expect(!stuck(&w, at: t, wanted: true))         // lid mode about to switch on
+    }
+}
+
+@Test func sleepWatchRestartsSettleAfterARealSleep() {
+    var w = LidSleepWatch()
+    _ = stuck(&w, at: 1000)
+    #expect(stuck(&w, at: 1000 + LidSleepWatch.settle))
+    _ = stuck(&w, at: 2000, awake: false)                // slept (dark wake now)
+    #expect(!stuck(&w, at: 5000))                         // fully awake again: settle first
+    #expect(stuck(&w, at: 5000 + LidSleepWatch.settle))
+}
+
+@Test func durationFormatting() {
+    #expect(fmtDuration(30) == "30s")
+    #expect(fmtDuration(60) == "1m")
+    #expect(fmtDuration(61) == "2m")
+    #expect(fmtDuration(3600) == "1h 00m")
+    #expect(fmtDuration(8 * 3600 - 10) == "8h 00m")
+    #expect(fmtDuration(7 * 3600 + 5 * 60) == "7h 05m")
+}
+
+@Test func wholeHoursAhead() {
+    var cal = Calendar(identifier: .gregorian)
+    cal.timeZone = TimeZone(identifier: "UTC")!
+    let now = Date(timeIntervalSince1970: 3600 * 10 + 1234)   // 10:20:34 UTC
+    let hrs = nextWholeHours(after: now, count: 3, calendar: cal)
+    let want: [TimeInterval] = [39600, 43200, 46800]   // 11:00, 12:00, 13:00
+    #expect(hrs.map(\.timeIntervalSince1970) == want)
+}
+
+@Test func sudoersRuleIsNarrow() {
+    #expect(lidSudoersRule(user: "uv")
+            == "uv ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1\n")
+}
+
+@Test func shellQuoting() {
+    #expect(shellQuoted("/Users/me/a b") == "'/Users/me/a b'")
+    #expect(shellQuoted("it's") == "'it'\\''s'")
+}
+
+// Claude Code's own API retry phase (~3 min) between the error lines it prints.
+// Seen 2026-10-05: auto-continue counted each 3-min cycle as "recovered" and typed
+// "continue" 20+ times, always as attempt #1.
+@Test func claudeRetryLineDetected() {
+    let retrying = """
+    ⏺ API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)
+
+    ✻ Sautéed for 3m 3s · done 2:41 PM
+
+    ❯ continue
+
+    ✻ Can't reach the API server — check your internet or DNS (ENOTFOUND) · Retrying in 14s · attempt 9/10
+    """
+    #expect(claudeRetryingVisible(retrying))
+    #expect(!claudeRetryingVisible("⏺ API Error: Can't reach the API server (ENOTFOUND)\n\n❯ "))
+    #expect(!claudeRetryingVisible("✻ Baking… (2m · ↓ 1k tokens)"))
+}
+
+@Test func statusLinesAbovePromptForDiagnostics() {
+    let screen = """
+    ⏺ Agent(Implement Plan B Task 9)
+      ⎿  Running…
+
+    ✻ Baking… (52m 10s · ↓ 3.2k tokens)
+
+    ────────────────────────────────────────
+    ❯ 
+    ────────────────────────────────────────
+      ⏵⏵ auto mode on
+    """
+    #expect(statusLinesAbovePrompt(screen, count: 2) == ["⎿  Running…", "✻ Baking… (52m 10s · ↓ 3.2k tokens)"])
+    #expect(statusLinesAbovePrompt("plain shell output\n$ ") == [])
+}
+
+// ── Why an on-screen error wasn't answered (diagnostics) ──
+
+private let claudeFooter = "\n────────────────────────────────────────\n❯ \n────────────────────────────────────────\n  ? for shortcuts"
+
+@Test func errorStatusUnanswered() {
+    #expect(claudeErrorStatus("⏺ API Error: Can't reach the API server (ENOTFOUND)" + claudeFooter) == .unanswered)
+}
+
+@Test func errorStatusReasons() {
+    #expect(claudeErrorStatus("all good" + claudeFooter) == .none)
+    let answered = "⏺ API Error: Can't reach the API server\n\n❯ continue\n\n✻ Baked for 3m" + claudeFooter
+    guard case .skipped(let why) = claudeErrorStatus(answered) else { Issue.record("expected skipped"); return }
+    #expect(why.contains("continue"))
+    let later = "⏺ API Error: boom\n\n⏺ All done — here's the summary.\n" + claudeFooter
+    guard case .skipped(let why2) = claudeErrorStatus(later) else { Issue.record("expected skipped"); return }
+    #expect(why2.contains("said more"))
+    guard case .skipped = claudeErrorStatus("⏺ API Error: boom\n$ ") else { Issue.record("no UI → skipped"); return }
+}
+
+@Test func statusLinesSkipRuleWithText() {
+    let screen = "✻ Baking… (2m)\n                         ✔ Update installed\n──────────────────── session ──\n❯ \n────────────────────"
+    #expect(statusLinesAbovePrompt(screen) == ["✻ Baking… (2m)", "✔ Update installed"])
+}
+
+// ── AppSettings ──
+
+private func freshDefaults() -> UserDefaults {
+    let name = "ephedrine-test-\(UUID().uuidString)"
+    let d = UserDefaults(suiteName: name)!
+    d.removePersistentDomain(forName: name)
+    return d
+}
+
+@Test func settingsDefaultsOnEmptySuite() {
+    let s = AppSettings(defaults: freshDefaults())
+    #expect(s.enabled && s.finishMode == .sleepIfIdle && s.gracePeriod == 120 && s.graceUseSystem)
+    #expect(s.powerMode == .always && s.detectors.isEmpty && s.usageAlert == 80 && !s.allowDisplaySleep)
+    #expect(s.autoContinueMode == .off && !s.autoResumeLimit && !s.keepAwakeClaudeWorking)
+    #expect(s.lidWhileClaude && s.lidBatteryFloor == 20 && s.lidPauseApps && s.awayKeepRunning.isEmpty)
+}
+
+// Review focus 1: values saved by the pre-window app (raw keys) must load.
+@Test func settingsReadExistingKeys() {
+    let d = freshDefaults()
+    d.set(false, forKey: "enabled"); d.set("alwaysSleep", forKey: "finishMode")
+    d.set(30.0, forKey: "gracePeriod"); d.set(false, forKey: "graceUseSystem")
+    d.set("acOnly", forKey: "powerMode"); d.set(["ssh", "terminal"], forKey: "detectors")
+    d.set(90, forKey: "usageAlert"); d.set(true, forKey: "allowDisplaySleep")
+    d.set("persistent", forKey: "autoContinueMode"); d.set(true, forKey: "autoResumeLimit")
+    d.set(true, forKey: "keepAwakeClaudeWorking"); d.set(false, forKey: "lidWhileClaude")
+    d.set(10, forKey: "lidBatteryFloor"); d.set(false, forKey: "lidPauseApps")
+    d.set(["com.spotify.client"], forKey: "awayKeepRunning")
+    let s = AppSettings(defaults: d)
+    #expect(!s.enabled && s.finishMode == .alwaysSleep && s.gracePeriod == 30 && !s.graceUseSystem)
+    #expect(s.powerMode == .acOnly && s.detectors == ["ssh", "terminal"] && s.usageAlert == 90 && s.allowDisplaySleep)
+    #expect(s.autoContinueMode == .persistent && s.autoResumeLimit && s.keepAwakeClaudeWorking)
+    #expect(!s.lidWhileClaude && s.lidBatteryFloor == 10 && !s.lidPauseApps)
+    #expect(s.awayKeepRunning == ["com.spotify.client"])
+}
+
+@Test func settingsLegacyAutoContinueMigrates() {
+    let d = freshDefaults()
+    d.set(true, forKey: "autoContinue")
+    #expect(AppSettings(defaults: d).autoContinueMode == .backoff)
+}
+
+@Test func settingsPersistAndReportKey() {
+    let d = freshDefaults()
+    let a = AppSettings(defaults: d)
+    var changed: [String] = []
+    a.onChange = { changed.append($0) }
+    a.finishMode = .stayNormal
+    a.detectors.insert("monitor")
+    a.lidBatteryFloor = 30
+    #expect(changed == ["finishMode", "detectors", "lidBatteryFloor"])
+    let b = AppSettings(defaults: d)
+    #expect(b.finishMode == .stayNormal && b.detectors == ["monitor"] && b.lidBatteryFloor == 30)
+}
+
+// Review focus 5
+@Test func keepRunningAddDedupes() {
+    let s = AppSettings(defaults: freshDefaults())
+    s.addKeepRunning("com.spotify.client")
+    s.addKeepRunning("com.spotify.client")
+    #expect(s.awayKeepRunning == ["com.spotify.client"])
+}
+
+@Test func nextOccurrenceRollsToTomorrow() {
+    var cal = Calendar(identifier: .gregorian)
+    cal.timeZone = TimeZone(identifier: "UTC")!
+    let now = Date(timeIntervalSince1970: 23 * 3600)              // 1970-01-01 23:00 UTC
+    let sevenAM = Date(timeIntervalSince1970: 7 * 3600)            // any day, 07:00
+    #expect(nextOccurrence(ofTimeIn: sevenAM, after: now, calendar: cal).timeIntervalSince1970 == 86400 + 7 * 3600)
+    let elevenThirtyPM = Date(timeIntervalSince1970: 23 * 3600 + 1800)
+    #expect(nextOccurrence(ofTimeIn: elevenThirtyPM, after: now, calendar: cal).timeIntervalSince1970 == 23 * 3600 + 1800)
+    #expect(nextOccurrence(ofTimeIn: now, after: now, calendar: cal).timeIntervalSince1970 == 86400 + 23 * 3600)   // "now" means tomorrow
+}
+
+// Quitting while a slow "on" is still running must still end "off".
+// 2026-10-06: a quit mid-flip left pmset disablesleep on with nothing owning it.
+@Test func serialSwitchQuitAfterSlowOnEndsOff() {
+    let lock = NSLock()
+    var applied: [Bool] = []
+    let sw = SerialSwitch(label: "test.switch") { on in
+        if on { Thread.sleep(forTimeInterval: 0.2) }   // sudo pmset is slow
+        lock.lock(); applied.append(on); lock.unlock()
+        return true
+    }
+    sw.setAsync(true) { _ in }
+    #expect(sw.setSync(false))
+    lock.lock(); defer { lock.unlock() }
+    #expect(applied == [true, false])
+}
+
+// Diagnostics: the layout below an on-screen error, as shapes only (no text).
+@Test func lineShapesSummarizeLayout() {
+    let lines = ["", "✻ Worked for 3m · done 3:39 PM", "⏺ Some reply", "  ⎿  tool output", "──────── x", "❯ continue", "❯ ", "  ⏵⏵ auto mode on", "※ recap: did stuff"]
+    #expect(lineShapes(lines) == "_✻⏺⎿─P❯x※")
+}
+
+// 2026-10-05 3:39 PM: the turn ended on an API error but no "continue" was typed;
+// later the log showed the error 31 to 35 lines up. Distance from the bottom isn't
+// the test; whether anything was said or typed after the error is.
+@Test func errorFarAboveTallFooterIsStillUnanswered() {
+    let panel = String(repeating: "  ◯ Review Plan B Task 7 · 12m\n", count: 25)
+    let screen = "⏺ API Error: Can't reach the API server (ENOTFOUND)\n\n✻ Worked for 2m 54s · done 3:39 PM\n\n" + panel + claudeFooter
+    #expect(claudeErrorStatus(screen) == .unanswered)
+}
+
+// Seen live 2026-10-06: the scan matched "API Error" in Claude's own prose in
+// another tab. Only a real error message, at the left edge ("⏺ API Error: …",
+// or older "API Error: …"), counts; prose or a pasted error in a prompt don't.
+@Test func errorInProseOrPastedPromptIsIgnored() {
+    let prose = "⏺ Here's what happened: the turn ended on an API error at 3:39,\n  and API Error: lines like that one are what we watch for.\n" + claudeFooter
+    #expect(claudeErrorStatus(prose) == .none)
+    let pasted = "❯ closing says\n  ⏺ API Error: Can't reach the API server (ENOTFOUND)\n" + claudeFooter
+    #expect(claudeErrorStatus(pasted) == .none)
+    #expect(claudeErrorStatus("API Error: unable to connect to API (ECONNREFUSED)" + claudeFooter) == .unanswered)
+}
+
+@Test func lidLockOnCloseSetting() {
+    let d = freshDefaults()
+    let s = AppSettings(defaults: d)
+    #expect(s.lidLockOnClose)                       // on unless turned off
+    var changed: [String] = []
+    s.onChange = { changed.append($0) }
+    s.lidLockOnClose = false
+    #expect(changed == ["lidLockOnClose"])
+    #expect(!AppSettings(defaults: d).lidLockOnClose)
+}
+
+@Test func lidHeatAndCapSettings() {
+    let d = freshDefaults()
+    let s = AppSettings(defaults: d)
+    #expect(s.lidHeatLimit == .hot && s.lidClosedCapHours == 0)   // same as before these existed
+    var changed: [String] = []
+    s.onChange = { changed.append($0) }
+    s.lidHeatLimit = .warm
+    s.lidClosedCapHours = 4
+    #expect(changed == ["lidHeatLimit", "lidClosedCapHours"])
+    let b = AppSettings(defaults: d)
+    #expect(b.lidHeatLimit == .warm && b.lidClosedCapHours == 4)
+}
+
+// Old README said `defaults write … awayKeepRunning -array-add`, which can leave
+// duplicates; the Away list (ForEach by id) needs them gone on load.
+@Test func keepRunningDuplicatesDroppedOnLoad() {
+    let d = freshDefaults()
+    d.set(["com.spotify.client", "com.apple.Music", "com.spotify.client"], forKey: "awayKeepRunning")
+    #expect(AppSettings(defaults: d).awayKeepRunning == ["com.spotify.client", "com.apple.Music"])
+}
+
+// About → Terminal control: 0 tabs used to always say "allow in Automation",
+// even when Terminal simply had no windows.
+@Test func terminalControlStatusWording() {
+    #expect(terminalControlStatus(tabs: -1, error: "") == "Not checked yet")
+    #expect(terminalControlStatus(tabs: 3, error: "") == "OK (3 tabs)")
+    #expect(terminalControlStatus(tabs: 1, error: "") == "OK (1 tab)")
+    #expect(terminalControlStatus(tabs: 0, error: "") == "OK, no Terminal windows open")
+    #expect(terminalControlStatus(tabs: 0, error: "execution error: Terminal got an error: Application isn't running. (-600)") == "OK, Terminal isn't open")
+    #expect(terminalControlStatus(tabs: 0, error: "execution error: Not authorized to send Apple events to Terminal. (-1743)").hasPrefix("Not allowed"))
+}
+
+// ── First-run setup screen ──
+
+@Test func automationPermissionStates() {
+    #expect(automationPermission(0) == .granted)
+    #expect(automationPermission(-1743) == .denied)          // errAEEventNotPermitted
+    #expect(automationPermission(-1744) == .notAsked)        // errAEEventWouldRequireUserConsent
+    #expect(automationPermission(-600) == .appNotRunning)    // procNotFound: Terminal isn't open
+    #expect(automationPermission(-1) == .unknown)
+}
+
+@Test func hooksInstalledDetection() {
+    #expect(!claudeHooksInstalled(settingsJSON: nil))
+    #expect(!claudeHooksInstalled(settingsJSON: #"{"model": "opus"}"#))
+    let ours = #"{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "/Users/me/.claude/ephedrine/hook.sh idle"}]}]}}"#
+    #expect(claudeHooksInstalled(settingsJSON: ours))
+    // someone else's hook that merely mentions the name doesn't count
+    #expect(!claudeHooksInstalled(settingsJSON: #"{"hooks": {"Stop": [{"hooks": [{"command": "echo ephedrine"}]}]}}"#))
+}
+
+@Test func setupDoneSetting() {
+    let d = freshDefaults()
+    let s = AppSettings(defaults: d)
+    #expect(!s.setupDone)
+    s.setupDone = true
+    #expect(AppSettings(defaults: d).setupDone)
+}
+
+@Test func menuBarIconStyleSetting() {
+    let d = freshDefaults()
+    let s = AppSettings(defaults: d)
+    #expect(s.menuBarIconStyle == .mono)            // matches the other menu bar icons by default
+    var changed: [String] = []
+    s.onChange = { changed.append($0) }
+    s.menuBarIconStyle = .state
+    #expect(changed == ["menuBarIconStyle"])
+    #expect(AppSettings(defaults: d).menuBarIconStyle == .state)
+    #expect(MenuBarIconStyle.allCases.map(\.label) == ["Match the menu bar", "Orange spark", "Color by state"])
+}
