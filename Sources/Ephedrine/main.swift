@@ -105,7 +105,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var detectorScanInFlight = false
     var armed = false
     var awayMode = false
-    var awayArmed = false
+    var awayReturn: AwayReturn?
+    var lastAwayReturnByInput: Date?
     var suspendedPids: [pid_t] = []
     var pausedNames: [String] = []
     var savedBrightness: Float = -1
@@ -576,7 +577,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     // MARK: Away mode ("I'm leaving")
 
     func enterAway() {
-        awayMode = true; awayArmed = false
+        awayMode = true; awayReturn = AwayReturn(enteredAt: Date())
         suspendApps()
         dimScreen()
         persistAwayState()   // crash-recovery: next launch un-freezes and restores brightness
@@ -587,26 +588,25 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         evaluate()
     }
 
-    func exitAway() {
+    func exitAway(_ why: String) {
         awayTimer?.invalidate(); awayTimer = nil
         resumeApps()
         restoreBrightness()
         clearAwayState()
-        awayMode = false; awayArmed = false
-        logLine("away mode OFF: resumed apps, restored brightness")
+        awayMode = false; awayReturn = nil
+        logLine("away mode OFF (\(why)): resumed apps, restored brightness")
         awayNotify("Welcome back", "Resumed your apps and restored screen brightness.")
         evaluate()
     }
 
-    /// Runs every 1s while away: arm after a brief absence, then restore the
-    /// instant you move the mouse or type.
+    /// Runs every 1s while away: restore as soon as you move the mouse or type,
+    /// ignoring the first few seconds (the click that started it).
     func awayCheck() {
-        guard awayMode else { return }
+        guard awayMode, let r = awayReturn else { return }
         let idle = hidIdleSeconds()
-        if !awayArmed {
-            if idle > 4 { awayArmed = true; logLine("away mode armed (you left)") }
-        } else if idle < 2 {
-            exitAway()
+        if r.isBack(now: Date(), idleSeconds: idle) {
+            lastAwayReturnByInput = Date()
+            exitAway(String(format: "input %.1fs ago", idle))
         }
     }
 
@@ -836,6 +836,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         refreshDisplaySleepIfStale()
         menu.removeAllItems()
         addStatusAndUsage(to: menu)
+        menu.addItem(awayMode ? item("I'm back, restore my apps", #selector(toggleAway))
+                              : item("I'm leaving", #selector(toggleAway), subtitle: "Pause apps and dim the screen"))
         menu.addItem(item("Keep awake while Claude works", #selector(toggleEnabled), on: settings.enabled,
                           subtitle: settings.enabled ? nil : "Off, so macOS sleeps as usual"))
         let s = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
@@ -884,7 +886,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     // MARK: actions
 
     @objc func toggleAway() {
-        if awayMode { exitAway() } else { enterAway() }
+        if awayMode { exitAway("clicked I'm back"); return }
+        if AwayReturn.ignoresLeaving(lastReturnByInput: lastAwayReturnByInput, now: Date()) {
+            logLine("ignored I'm leaving: clicked just as input brought you back")
+            return
+        }
+        enterAway()
     }
 
     @objc func toggleEnabled() { settings.enabled.toggle() }

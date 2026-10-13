@@ -100,3 +100,29 @@ public enum MenuBarIconStyle: String, CaseIterable {
         }
     }
 }
+
+/// Decides when you're back from "I'm leaving". Input in the first `grace`
+/// seconds is the click that started it (and you getting up), so it doesn't
+/// count; any input after that does. An earlier rule only listened after 4s
+/// of stillness, so a cursor that never stopped never brought the screen back.
+public struct AwayReturn {
+    public let enteredAt: Date
+    public let grace: TimeInterval
+
+    public init(enteredAt: Date, grace: TimeInterval = 3) {
+        self.enteredAt = enteredAt
+        self.grace = grace
+    }
+
+    /// `idleSeconds`: time since the last keyboard or mouse input.
+    public func isBack(now: Date, idleSeconds: Double) -> Bool {
+        now.addingTimeInterval(-idleSeconds) > enteredAt.addingTimeInterval(grace)
+    }
+
+    /// Input brings the screen back under a click aimed at "I'm back", which by
+    /// then reads "I'm leaving". That click must not start away mode again.
+    public static func ignoresLeaving(lastReturnByInput: Date?, now: Date) -> Bool {
+        guard let back = lastReturnByInput else { return false }
+        return now.timeIntervalSince(back) < 2
+    }
+}

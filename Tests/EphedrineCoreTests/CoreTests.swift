@@ -900,6 +900,36 @@ private func freshDefaults() -> UserDefaults {
     #expect(terminalControlStatus(tabs: 0, error: "execution error: Not authorized to send Apple events to Terminal. (-1743)").hasPrefix("Not allowed"))
 }
 
+// ── "I'm leaving" ──
+
+@Test func awayReturnsWhenCursorNeverStops() {
+    // 2026-10-09: the screen stayed black for ~40s while the cursor kept
+    // moving, because the old rule only listened after 4s of stillness.
+    let t0 = Date(timeIntervalSince1970: 1_000_000)
+    let away = AwayReturn(enteredAt: t0)
+    let backAt = (1...20).first { s in away.isBack(now: t0 + Double(s), idleSeconds: 0.2) }
+    #expect(backAt == 4)   // first 1s tick whose last input is after the 3s grace
+}
+
+@Test func awayIgnoresInputDuringGrace() {
+    let t0 = Date(timeIntervalSince1970: 1_000_000)
+    let away = AwayReturn(enteredAt: t0)
+    #expect(!away.isBack(now: t0 + 2, idleSeconds: 0.1))    // the click that started it
+    #expect(!away.isBack(now: t0 + 10, idleSeconds: 7.5))   // last input was at 2.5s, inside the grace
+    #expect(!away.isBack(now: t0 + 600, idleSeconds: 597))  // still gone
+    #expect(away.isBack(now: t0 + 600, idleSeconds: 0.5))   // came back
+}
+
+@Test func leavingRightAfterComingBackIsIgnored() {
+    // The screen comes back under a click aimed at "I'm back", which by then
+    // reads "I'm leaving"; that click must not start away mode again.
+    let back = Date(timeIntervalSince1970: 1_000_000)
+    #expect(AwayReturn.ignoresLeaving(lastReturnByInput: back, now: back + 0.5))
+    #expect(AwayReturn.ignoresLeaving(lastReturnByInput: back, now: back + 1.9))
+    #expect(!AwayReturn.ignoresLeaving(lastReturnByInput: back, now: back + 2.1))
+    #expect(!AwayReturn.ignoresLeaving(lastReturnByInput: nil, now: back))
+}
+
 // ── First-run setup screen ──
 
 @Test func automationPermissionStates() {
