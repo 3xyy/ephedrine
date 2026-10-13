@@ -190,7 +190,7 @@ extension AppController {
             hot: lidTooHot(thermal, limit: settings.lidHeatLimit),
             closedCap: TimeInterval(settings.lidClosedCapHours * 3600), now: Date())
         // Before reading the switch: starting a check-in turns sleep off right away.
-        stepCheckIn(closed: closed, guarded: lidGuardActive(lidState, inputs), claudeBusy: claudeBusy)
+        stepCheckIn(closed: closed, guarded: lidGuardActive(lidState, inputs) || batteryStop.stopped, claudeBusy: claudeBusy)
         inputs.checkIn = checkIn.isOpen
         let actual = sleepIsDisabled()
         lidActive = actual

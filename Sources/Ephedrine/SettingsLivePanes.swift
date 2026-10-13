@@ -123,6 +123,7 @@ struct LidPane: View {
                         Text("Only when plugged in").tag(lidOnlyPluggedIn)
                         ForEach(lidBatteryFloors.reversed(), id: \.self) { Text($0 == 0 ? "No limit" : "Stop at \($0)%").tag($0) }
                     }
+                    Tip("The battery limit also covers everything else Ephedrine keeps awake for (“I'm leaving”, Stay awake, Claude, usage-limit waits), at 10% to 30%, until you plug in.")
                     Picker("Too hot at", selection: $settings.lidHeatLimit) {
                         Text("Warm").tag(LidHeatLimit.warm)
                         Text("Hot").tag(LidHeatLimit.hot)

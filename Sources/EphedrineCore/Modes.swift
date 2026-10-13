@@ -114,9 +114,12 @@ public struct AwayReturn {
         self.grace = grace
     }
 
-    /// `idleSeconds`: time since the last keyboard or mouse input.
+    /// `idleSeconds`: time since the last keyboard or mouse input. That counter
+    /// stops while the Mac sleeps, so it can't be compared with clock time
+    /// across a sleep: only input in the last few seconds counts, and only if
+    /// it came after the grace.
     public func isBack(now: Date, idleSeconds: Double) -> Bool {
-        now.addingTimeInterval(-idleSeconds) > enteredAt.addingTimeInterval(grace)
+        idleSeconds < min(5, now.timeIntervalSince(enteredAt) - grace)
     }
 
     /// Input brings the screen back under a click aimed at "I'm back", which by

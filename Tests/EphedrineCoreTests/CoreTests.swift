@@ -717,6 +717,34 @@ private func stuck(_ w: inout LidSleepWatch, at t: TimeInterval, closed: Bool = 
     #expect(statusLinesAbovePrompt("plain shell output\n$ ") == [])
 }
 
+// ── Battery floor for everything ──
+
+@Test func awakeFloorFollowsTheLidChoice() {
+    #expect(awakeBatteryFloor(lidFloor: 20) == 20)
+    #expect(awakeBatteryFloor(lidFloor: 30) == 30)
+    #expect(awakeBatteryFloor(lidFloor: 10) == 10)
+    #expect(awakeBatteryFloor(lidFloor: 0) == 10)                  // "No limit" still never runs it flat
+    #expect(awakeBatteryFloor(lidFloor: lidOnlyPluggedIn) == 30)   // the most careful choice
+}
+
+@Test func batteryStopLatchesUntilPluggedIn() {
+    // 2026-10-13: "I'm leaving" held the Mac awake on battery from 80% at 1am
+    // to 3% at 8am; only lid mode stopped at 20%.
+    var b = BatteryStop()
+    func step(_ onBattery: Bool, _ pct: Int?) -> Bool { b.step(onBattery: onBattery, percent: pct, floor: 20) }
+    #expect(!step(true, 21))
+    #expect(!b.stopped)
+    #expect(step(true, 20))                     // newly stopped, report once
+    #expect(b.stopped)
+    #expect(!step(true, 19))
+    #expect(!step(true, 22))                    // a bounce back up doesn't restart it
+    #expect(b.stopped)
+    #expect(!step(false, 22))                   // plugged in
+    #expect(!b.stopped)
+    #expect(!step(true, nil))                   // no battery reading: never stop
+    #expect(!b.stopped)
+}
+
 // ── Remote Control check-ins ──
 
 private func ci(enabled: Bool = true, closed: Bool = true, awake: Bool = false, sleepStarting: Bool = false,
@@ -1048,6 +1076,17 @@ private func freshDefaults() -> UserDefaults {
     #expect(!away.isBack(now: t0 + 10, idleSeconds: 7.5))   // last input was at 2.5s, inside the grace
     #expect(!away.isBack(now: t0 + 600, idleSeconds: 597))  // still gone
     #expect(away.isBack(now: t0 + 600, idleSeconds: 0.5))   // came back
+}
+
+@Test func awayIgnoresTimeSpentAsleep() {
+    // 2026-10-13: the keyboard/mouse idle counter stops while the Mac sleeps.
+    // After a 4 minute sleep, "input 25448.5s ago" read as newer than the
+    // click 7 hours earlier, and away mode ended with nobody there.
+    let t0 = Date(timeIntervalSince1970: 1_000_000)
+    let away = AwayReturn(enteredAt: t0)
+    #expect(!away.isBack(now: t0 + 25_693.5, idleSeconds: 25_448.5))
+    #expect(!away.isBack(now: t0 + 3600, idleSeconds: 60))
+    #expect(away.isBack(now: t0 + 3600, idleSeconds: 0.4))
 }
 
 @Test func leavingRightAfterComingBackIsIgnored() {

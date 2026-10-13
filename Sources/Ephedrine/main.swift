@@ -54,6 +54,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var checkIn = RemoteCheckIn()                   // Remote Control check-ins from lid-shut naps
     var checkInWakeID = IOPMAssertionID(0)          // the "user is active" request that makes a nap a full wake
     var checkInActivity: NSObjectProtocol?          // keeps App Nap from slowing the tick while check-ins are on
+    var batteryStop = BatteryStop()                 // on battery at the floor: keep nothing awake until plugged in
     var sigtermSource: DispatchSourceSignal?
 
     // continueQueue-confined state (only touched on continueQueue)
@@ -268,8 +269,22 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             keepAwakeUntil = nil; logLine("timed keep-awake expired")
         }
 
+        // 2026-10-13: "I'm leaving" held the Mac awake on battery from 80% at
+        // 1am until it died; only lid mode had a battery limit.
+        let charge = batteryPercent()
+        if batteryStop.step(onBattery: !onACPower(), percent: charge,
+                            floor: awakeBatteryFloor(lidFloor: settings.lidBatteryFloor)) {
+            let pct = charge ?? 0
+            manualKeepAwake = false; keepAwakeUntil = nil
+            logLine("battery at \(pct)%, no longer keeping the Mac awake until it's plugged in")
+            if awayMode { DispatchQueue.main.async { [weak self] in self?.exitAway("battery at \(pct)%", notify: false) } }
+            batteryNotify("Battery at \(pct)%", "Ephedrine stopped keeping the Mac awake"
+                          + (awayMode ? " and ended “I'm leaving”" : "") + ", so it can sleep. Plug it in and it carries on.")
+        }
+        let lowBattery = batteryStop.stopped
+
         let busy = activeSessionCount() > 0
-        let manualActive = manualKeepAwake || keepAwakeUntil != nil || awayMode
+        let manualActive = !lowBattery && (manualKeepAwake || keepAwakeUntil != nil || awayMode)
         var extraActive = false
         if settings.enabled && !busy && !manualActive && !settings.detectors.isEmpty {
             // Detectors spawn `ps`, so they run off-main; evaluate uses the
@@ -302,13 +317,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
         // The master switch gates the automatic behavior only; an explicit
         // "Stay awake" / "I'm leaving" always does what it says.
-        let keepAwake = (settings.enabled && blocked) || manualActive
+        let keepAwake = !lowBattery && ((settings.enabled && blocked) || manualActive)
         if keepAwake {
             // Screen may sleep for pure background reasons: detector activity or a
             // session-limit wait (which can be hours), but not while Claude is
-            // actively generating or during a manual override.
-            let displayOff = settings.allowDisplaySleep && !busy && !manualActive && !claudeWorkingNow
-                && (extraActive || limitWaitNow)
+            // actively generating or during a manual override. "I'm leaving"
+            // has already blacked it out, so let it sleep and save the power.
+            let displayOff = awayMode || (settings.allowDisplaySleep && !busy && !manualActive && !claudeWorkingNow
+                && (extraActive || limitWaitNow))
             if awake.apply(system: true, display: !displayOff) {
                 logLine("keep-awake ON (\(displayOff ? "system-only" : "display+system"))")
             }
@@ -592,14 +608,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         evaluate()
     }
 
-    func exitAway(_ why: String) {
+    func exitAway(_ why: String, notify: Bool = true) {
         awayTimer?.invalidate(); awayTimer = nil
         resumeApps()
         restoreBrightness()
         clearAwayState()
         awayMode = false; awayReturn = nil
         logLine("away mode OFF (\(why)): resumed apps, restored brightness")
-        awayNotify("Welcome back", "Resumed your apps and restored screen brightness.")
+        if notify { awayNotify("Welcome back", "Resumed your apps and restored screen brightness.") }
         evaluate()
     }
 
@@ -717,6 +733,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         savedBrightness = -1
     }
 
+    func batteryNotify(_ t: String, _ b: String) {
+        let c = UNMutableNotificationContent(); c.title = t; c.body = b
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ka_battery", content: c, trigger: nil))
+    }
+
     func awayNotify(_ t: String, _ b: String) {
         let c = UNMutableNotificationContent(); c.title = t; c.body = b
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ka_away", content: c, trigger: nil))
@@ -820,6 +841,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     func statusText() -> String {
         if awayMode { return "Away: \(suspendedPids.count) apps paused, screen dimmed" }
         if lidPaused { return "Lid shut: \(suspendedPids.count) apps paused" }
+        if batteryStop.stopped { return "Battery at \(batteryPercent() ?? 0)%, letting the Mac sleep until it's plugged in" }
         if manualKeepAwake { return "Awake until you turn it off" }
         if let until = keepAwakeUntil { return "Awake for \(fmtCountdown(Int(until.timeIntervalSinceNow))) more" }
         if !settings.enabled { return "Off, macOS sleeps as usual" }

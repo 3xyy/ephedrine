@@ -135,6 +135,27 @@ public func lidGuard(_ i: LidInputs) -> LidGuard? {
     return i.hot ? .hot : unplugged ? .unplugged : low ? .lowBattery : nil
 }
 
+/// On battery at or below this, Ephedrine stops keeping the Mac awake for
+/// anything ("I'm leaving", Stay awake, Claude, usage-limit waits), so a night
+/// on battery can't end with a dead Mac. Follows the lid-closed "On battery"
+/// choice, kept between 10% and 30%.
+public func awakeBatteryFloor(lidFloor: Int) -> Int { min(30, max(10, lidFloor)) }
+
+/// Latches when the battery reaches the floor and holds until the Mac is
+/// plugged in, so hovering around the floor can't flip keep-awake on and off.
+public struct BatteryStop: Equatable {
+    public private(set) var stopped = false
+    public init() {}
+
+    /// True only at the moment it stops (to log and notify once).
+    public mutating func step(onBattery: Bool, percent: Int?, floor: Int) -> Bool {
+        if !onBattery { stopped = false; return false }
+        guard !stopped, let p = percent, p <= floor else { return false }
+        stopped = true
+        return true
+    }
+}
+
 /// A limit says "sleep anyway" now, or tripped earlier and holds until the lid opens.
 public func lidGuardActive(_ s: LidState, _ i: LidInputs) -> Bool {
     lidGuard(i) != nil || s.tripped != nil
