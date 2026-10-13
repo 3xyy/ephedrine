@@ -717,6 +717,125 @@ private func stuck(_ w: inout LidSleepWatch, at t: TimeInterval, closed: Bool = 
     #expect(statusLinesAbovePrompt("plain shell output\n$ ") == [])
 }
 
+// ── Remote Control check-ins ──
+
+private func ci(enabled: Bool = true, closed: Bool = true, awake: Bool = false, sleepStarting: Bool = false,
+                external: Bool = false, guarded: Bool = false, at t: TimeInterval) -> CheckInInputs {
+    CheckInInputs(enabled: enabled, lidClosed: closed, fullyAwake: awake, sleepStarting: sleepStarting,
+                  externalDisplay: external, guarded: guarded, now: Date(timeIntervalSince1970: t))
+}
+
+/// A check-in whose lid closed at t=0 (the clock starts on the first closed step).
+private func napping() -> RemoteCheckIn {
+    var c = RemoteCheckIn()
+    _ = c.step(ci(awake: true, at: 0))   // lid shuts while awake: no check-in
+    return c
+}
+
+@Test func checkInRunsOnANapAndSleepsAgain() {
+    var c = napping()
+    #expect(c.step(ci(at: 600)) == .started)                  // 10 min later macOS naps
+    #expect(c.isOpen)
+    #expect(c.step(ci(at: 601)) == nil)                        // still dark, waiting
+    #expect(c.step(ci(awake: true, at: 604)) == .fullyAwake(after: 4))
+    #expect(c.step(ci(awake: true, at: 604 + RemoteCheckIn.window - 1)) == nil)
+    #expect(c.step(ci(awake: true, at: 604 + RemoteCheckIn.window)) == .ended(.windowOver))
+    #expect(!c.isOpen)
+}
+
+@Test func checkInGivesUpWithoutAFullWake() {
+    // 2026-10-05: sleep switched off inside a nap held the Mac there with no
+    // Wi-Fi for 74 minutes. A check-in must let go if the full wake never comes.
+    var c = napping()
+    #expect(c.step(ci(at: 600)) == .started)
+    #expect(c.step(ci(at: 600 + RemoteCheckIn.fullWakeTimeout - 1)) == nil)
+    #expect(c.step(ci(at: 600 + RemoteCheckIn.fullWakeTimeout)) == .ended(.noFullWake))
+    #expect(!c.isOpen)
+}
+
+@Test func checkInOnlyFromANap() {
+    var c = napping()
+    #expect(c.step(ci(awake: true, at: 600)) == nil)           // fully awake with the lid shut: not a nap
+    #expect(c.step(ci(sleepStarting: true, at: 601)) == nil)   // going to sleep, not waking from it
+    #expect(c.step(ci(external: true, at: 602)) == nil)        // desk setup
+    #expect(c.step(ci(guarded: true, at: 603)) == nil)         // battery or heat says sleep
+    #expect(c.step(ci(enabled: false, at: 604)) == nil)
+    #expect(c.step(ci(closed: false, at: 605)) == nil)
+    #expect(!c.isOpen)
+}
+
+@Test func checkInWaitsAfterTheLidCloses() {
+    var c = RemoteCheckIn()
+    #expect(c.step(ci(at: 0)) == nil)                          // capabilities drop as it falls asleep
+    #expect(c.step(ci(at: RemoteCheckIn.afterClose - 1)) == nil)
+    #expect(c.step(ci(at: RemoteCheckIn.afterClose)) == .started)
+}
+
+@Test func checkInsAreSpacedOut() {
+    var c = napping()
+    #expect(c.step(ci(at: 600)) == .started)
+    #expect(c.step(ci(at: 600 + RemoteCheckIn.fullWakeTimeout)) == .ended(.noFullWake))
+    #expect(c.step(ci(at: 600 + RemoteCheckIn.spacing - 1)) == nil)
+    #expect(c.step(ci(at: 600 + RemoteCheckIn.spacing)) == .started)
+}
+
+@Test func checkInEndsWhenTheLidOpensOrItsTurnedOff() {
+    var c = napping()
+    #expect(c.step(ci(at: 600)) == .started)
+    #expect(c.step(ci(closed: false, awake: true, at: 610)) == .ended(.lidOpened))
+    var d = napping()
+    #expect(d.step(ci(at: 600)) == .started)
+    #expect(d.step(ci(enabled: false, at: 610)) == .ended(.turnedOff))
+    var e = napping()
+    #expect(e.step(ci(at: 600)) == .started)
+    #expect(e.step(ci(guarded: true, at: 610)) == .ended(.guarded))
+    var f = napping()
+    #expect(f.step(ci(at: 600)) == .started)
+    f.cancel()
+    #expect(!f.isOpen)
+}
+
+@Test func checkInHoldsLidModeOnlyWhileOpen() {
+    var s = LidState()
+    var i = lidIn(closed: true, at: 1000)
+    #expect(!stepLid(&s, i).disableSleep)
+    i.checkIn = true
+    #expect(stepLid(&s, i).disableSleep)
+    var hot = lidIn(closed: true, hot: true, at: 1003)
+    hot.checkIn = true
+    #expect(!stepLid(&s, hot).disableSleep)                    // the heat guard still wins
+}
+
+@Test func checkInRestartsTheLidShutCap() {
+    // Lid shut overnight with a 4h cap: work that a check-in picks up at 3am
+    // must not be stopped at once for the hours the Mac spent asleep.
+    var s = LidState()
+    _ = stepLid(&s, lidIn(whileClaude: true, closed: true, at: 0, cap: 4 * 3600))
+    s.restartClosedClock(now: Date(timeIntervalSince1970: 5 * 3600))
+    #expect(stepLid(&s, lidIn(whileClaude: true, busy: true, closed: true, at: 5 * 3600 + 10, cap: 4 * 3600)).disableSleep)
+    #expect(!stepLid(&s, lidIn(whileClaude: true, busy: true, closed: true, at: 9 * 3600 + 10, cap: 4 * 3600)).disableSleep)
+}
+
+@Test func checkInRespectsATrippedGuardUntilTheLidOpens() {
+    // Battery hit the floor mid-task, then the Mac was plugged in with the lid
+    // still shut: lid mode stays off until the lid opens, so no check-ins either.
+    var s = LidState()
+    _ = stepLid(&s, lidIn(whileClaude: true, busy: true, closed: true, battery: 15, at: 0))
+    let pluggedIn = lidIn(whileClaude: true, closed: true, battery: 15, onBattery: false, at: 600)
+    #expect(lidGuard(pluggedIn) == nil)
+    #expect(lidGuardActive(s, pluggedIn))
+    _ = stepLid(&s, lidIn(closed: false, onBattery: false, at: 700))   // lid opens
+    #expect(!lidGuardActive(s, lidIn(closed: true, onBattery: false, at: 800)))
+}
+
+@Test func lidGuardMatchesStepLid() {
+    #expect(lidGuard(lidIn(hot: true)) == .hot)
+    #expect(lidGuard(lidIn(floor: lidOnlyPluggedIn)) == .unplugged)
+    #expect(lidGuard(lidIn(battery: 15, floor: 20)) == .lowBattery)
+    #expect(lidGuard(lidIn(battery: 15, onBattery: false, floor: 20)) == nil)
+    #expect(lidGuard(lidIn()) == nil)
+}
+
 // ── Why an on-screen error wasn't answered (diagnostics) ──
 
 private let claudeFooter = "\n────────────────────────────────────────\n❯ \n────────────────────────────────────────\n  ? for shortcuts"
@@ -879,6 +998,17 @@ private func freshDefaults() -> UserDefaults {
     #expect(changed == ["lidHeatLimit", "lidClosedCapHours"])
     let b = AppSettings(defaults: d)
     #expect(b.lidHeatLimit == .warm && b.lidClosedCapHours == 4)
+}
+
+@Test func remoteCheckInSetting() {
+    let d = freshDefaults()
+    let s = AppSettings(defaults: d)
+    #expect(!s.lidRemoteCheckIn)                                // it wakes a sleeping Mac, so opt-in
+    var changed: [String] = []
+    s.onChange = { changed.append($0) }
+    s.lidRemoteCheckIn = true
+    #expect(changed == ["lidRemoteCheckIn"])
+    #expect(AppSettings(defaults: d).lidRemoteCheckIn)
 }
 
 // Old README said `defaults write … awayKeepRunning -array-add`, which can leave

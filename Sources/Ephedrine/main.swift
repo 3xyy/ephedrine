@@ -51,6 +51,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var lidLastClosed = false
     var lidSleepWatch = LidSleepWatch()
     let lidWatchdog = LidWatchdog()
+    var checkIn = RemoteCheckIn()                   // Remote Control check-ins from lid-shut naps
+    var checkInWakeID = IOPMAssertionID(0)          // the "user is active" request that makes a nap a full wake
+    var checkInActivity: NSObjectProtocol?          // keeps App Nap from slowing the tick while check-ins are on
     var sigtermSource: DispatchSourceSignal?
 
     // continueQueue-confined state (only touched on continueQueue)
@@ -150,6 +153,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         sigtermSource?.setEventHandler { NSApp.terminate(nil) }
         sigtermSource?.resume()
         lidSetupOK = lidSetupInstalled()
+        updateCheckInActivity()
 
         let menu = NSMenu()
         menu.delegate = self
@@ -937,6 +941,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             if !on { claudeWorkingCached = false }
             continueQueue.async { if on { _ = terminalTabsSnapshot() } }
             logLine("keep-awake-while-claude-works \(on ? "on" : "off")")
+        case "lidRemoteCheckIn":
+            updateCheckInActivity()
+            logLine("Remote Control check-ins \(settings.lidRemoteCheckIn ? "on" : "off")")
         case "usageAlert":
             usageAlerts = UsageAlertTracker()
             fetchUsage()

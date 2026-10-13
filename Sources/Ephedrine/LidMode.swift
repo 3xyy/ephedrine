@@ -182,6 +182,16 @@ extension AppController {
     /// Called from evaluate() every tick.
     func updateLidMode(claudeBusy: Bool) {
         let closed = lidIsClosed()
+        let battery = batteryPercent()
+        let thermal = ProcessInfo.processInfo.thermalState
+        var inputs = LidInputs(
+            whileClaude: settings.lidWhileClaude, claudeBusy: claudeBusy, lidClosed: closed,
+            onBattery: !onACPower(), batteryPercent: battery, batteryFloor: settings.lidBatteryFloor,
+            hot: lidTooHot(thermal, limit: settings.lidHeatLimit),
+            closedCap: TimeInterval(settings.lidClosedCapHours * 3600), now: Date())
+        // Before reading the switch: starting a check-in turns sleep off right away.
+        stepCheckIn(closed: closed, guarded: lidGuardActive(lidState, inputs), claudeBusy: claudeBusy)
+        inputs.checkIn = checkIn.isOpen
         let actual = sleepIsDisabled()
         lidActive = actual
         if closed != lidLastClosed {
@@ -193,13 +203,7 @@ extension AppController {
         updateLidLock(closed: closed)
         guard lidSetupOK else { return }
 
-        let battery = batteryPercent()
-        let thermal = ProcessInfo.processInfo.thermalState
-        let out = stepLid(&lidState, LidInputs(
-            whileClaude: settings.lidWhileClaude, claudeBusy: claudeBusy, lidClosed: closed,
-            onBattery: !onACPower(), batteryPercent: battery, batteryFloor: settings.lidBatteryFloor,
-            hot: lidTooHot(thermal, limit: settings.lidHeatLimit),
-            closedCap: TimeInterval(settings.lidClosedCapHours * 3600), now: Date()))
+        let out = stepLid(&lidState, inputs)
         if let e = out.sessionEnded { logLine("lid-closed session ended (\(e.rawValue))") }
         if let g = out.newlyTripped {
             let why: String
@@ -243,6 +247,73 @@ extension AppController {
             // Turned off elsewhere (watchdog, or by hand), so forget it.
             try? fm.removeItem(atPath: lidMarkerPath)
             lidWatchdog.stop()
+        }
+    }
+
+    /// Remote Control check-ins (see RemoteCheckIn): turn a lid-shut nap into a
+    /// full wake for a couple of minutes so `claude remote-control` can fetch
+    /// messages. Once it's over, stepLid lets the Mac sleep unless Claude is working.
+    private func stepCheckIn(closed: Bool, guarded: Bool, claudeBusy: Bool) {
+        let enabled = settings.lidRemoteCheckIn && settings.enabled && settings.lidWhileClaude && lidSetupOK
+        let ev = checkIn.step(CheckInInputs(
+            enabled: enabled, lidClosed: closed, fullyAwake: fullyAwake,
+            sleepStarting: Date().timeIntervalSince(lastWillSleep) < 60,
+            externalDisplay: externalDisplayActive(), guarded: guarded, now: Date()))
+        switch ev {
+        case .started?:
+            let caps = systemCapabilities().map { String(format: " (capabilities 0x%x)", $0) } ?? ""
+            logLine("Remote Control check-in: the Mac is napping\(caps), waking it fully")
+            lidState.restartClosedClock(now: Date())
+            lidFlipGeneration += 1   // supersedes any flip still finishing
+            fm.createFile(atPath: lidMarkerPath, contents: nil)
+            lidWatchdog.start()
+            // Sleep off first: a full wake with the lid shut would otherwise clamshell-sleep at once.
+            guard lidSwitch.setSync(true) else {
+                try? fm.removeItem(atPath: lidMarkerPath)
+                lidWatchdog.stop()
+                checkIn.cancel()
+                logLine("Remote Control check-in skipped: `sudo pmset` failed")
+                return
+            }
+            lidActive = true
+            declareCheckInWake()
+        case .fullyAwake(let after)?:
+            logLine("Remote Control check-in: fully awake after \(Int(after))s, listening for \(Int(RemoteCheckIn.window / 60)) minutes")
+        case .ended(let why)?:
+            releaseCheckInWake()
+            switch why {
+            case .windowOver:
+                logLine("Remote Control check-in over: " + (claudeBusy ? "Claude is working, so the Mac stays awake" : "nothing came in"))
+            case .noFullWake:
+                logLine("Remote Control check-in gave up: still napping after \(Int(RemoteCheckIn.fullWakeTimeout))s")
+            default:
+                logLine("Remote Control check-in ended (\(why.rawValue))")
+            }
+        case nil:
+            if checkIn.isOpen && checkIn.awakeAt == nil { declareCheckInWake() }   // ask again until it wakes
+        }
+    }
+
+    private func declareCheckInWake() {
+        let r = IOPMAssertionDeclareUserActivity("Ephedrine: Remote Control check-in" as CFString,
+                                                 kIOPMUserActiveLocal, &checkInWakeID)
+        if r != kIOReturnSuccess { logLine(String(format: "Remote Control check-in: wake request failed (0x%x)", r)) }
+    }
+
+    private func releaseCheckInWake() {
+        if checkInWakeID != 0 { IOPMAssertionRelease(checkInWakeID); checkInWakeID = 0 }
+    }
+
+    /// App Nap can stretch the 3s tick past a nap's few seconds, so check-ins
+    /// would never start. Opt out while they're on (this doesn't stop sleep).
+    func updateCheckInActivity() {
+        if settings.lidRemoteCheckIn, checkInActivity == nil {
+            checkInActivity = ProcessInfo.processInfo.beginActivity(
+                options: .userInitiatedAllowingIdleSystemSleep,
+                reason: "Checking for Remote Control messages when the Mac naps")
+        } else if !settings.lidRemoteCheckIn, let a = checkInActivity {
+            ProcessInfo.processInfo.endActivity(a)
+            checkInActivity = nil
         }
     }
 

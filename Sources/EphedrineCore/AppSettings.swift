@@ -27,6 +27,8 @@ public final class AppSettings: ObservableObject {
     @Published public var lidHeatLimit: LidHeatLimit { didSet { save(lidHeatLimit.rawValue, "lidHeatLimit") } }
     /// Claude-driven lid mode stops once the lid's been shut this many hours; 0 = never.
     @Published public var lidClosedCapHours: Int { didSet { save(lidClosedCapHours, "lidClosedCapHours") } }
+    /// Wake fully from lid-shut naps so `claude remote-control` can pick up messages (RemoteCheckIn).
+    @Published public var lidRemoteCheckIn: Bool { didSet { save(lidRemoteCheckIn, "lidRemoteCheckIn") } }
     /// The first-run setup screen was finished (or skipped).
     @Published public var setupDone: Bool { didSet { save(setupDone, "setupDone") } }
     @Published public var menuBarIconStyle: MenuBarIconStyle { didSet { save(menuBarIconStyle.rawValue, "menuBarIconStyle") } }
@@ -54,6 +56,7 @@ public final class AppSettings: ObservableObject {
         lidLockOnClose = bool("lidLockOnClose", true)
         lidHeatLimit = defaults.string(forKey: "lidHeatLimit").flatMap(LidHeatLimit.init(rawValue:)) ?? .hot
         lidClosedCapHours = defaults.object(forKey: "lidClosedCapHours") as? Int ?? 0
+        lidRemoteCheckIn = bool("lidRemoteCheckIn", false)
         setupDone = bool("setupDone", false)
         menuBarIconStyle = defaults.string(forKey: "menuBarIconStyle").flatMap(MenuBarIconStyle.init(rawValue:)) ?? .mono
         // Drop duplicates (the old `defaults write … -array-add` tip could add some), keep order.

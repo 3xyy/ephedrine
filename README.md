@@ -17,9 +17,10 @@ I wanted to start a long Claude Code task, close the lid, and come back to finis
 
 - Keeps the Mac awake while any Claude Code session is busy, subagents and long tool calls included. When the last one finishes, it waits until you've been idle for your display-sleep time, shows a 10 second warning you can cancel, and sleeps the Mac.
 - Lid-closed mode (optional): close the lid and Claude keeps going. A minute after it finishes, the Mac sleeps. The screen locks as the lid closes, and other apps can be paused until you open it. It sleeps anyway if the battery runs low, the Mac gets too hot, or the lid has been shut longer than you allow.
+- Remote Control check-ins (optional, off by default): with the lid shut and the Mac asleep, macOS still wakes it for a few seconds every 10 to 20 minutes. Ephedrine turns those into a full wake for 2 minutes, so `claude remote-control` can pick up a message you sent from your phone. If Claude starts working, the Mac stays awake until it's done, then goes back to sleep.
 - Terminal helpers (optional, Terminal.app): types `continue` when a session stops on an API error, waits out a usage limit that resets within 6 hours and resumes after it, and notices Claude working on screen when no hook fires.
 - Shows your Claude session and weekly limits in the menu, with an alert at a level you pick.
-- "I'm leaving" pauses other apps and dims the screen while Claude works. Move the mouse and everything comes back.
+- "I'm leaving" (in the menu bar menu) pauses other apps and dims the screen while Claude works. Move the mouse and everything comes back.
 
 ## Install
 
@@ -72,7 +73,7 @@ Open them with ⌘, from the menu.
 | Now | Stay awake for a while, start a lid-closed session, "I'm leaving", and clearing a stuck "working" state after Ctrl-C |
 | General | The on/off switch, extra things to stay awake for (a running Terminal command, `top` or `tail -f`, SSH, downloads, Claude busy in Terminal), Open at login, and the menu bar icon's colors (match the menu bar, an orange spark, or colored by state) |
 | Sleep | What happens when Claude finishes (sleep once you're away, always sleep, or nothing), how long to wait, and battery or adapter only |
-| Lid closed | Lid-closed mode, the screen lock, pausing apps, and when to sleep anyway: battery (only when plugged in, or stop at 30, 20 or 10%), heat, and how long the lid can stay shut |
+| Lid closed | Lid-closed mode, Remote Control check-ins, the screen lock, pausing apps, and when to sleep anyway: battery (only when plugged in, or stop at 30, 20 or 10%), heat, and how long the lid can stay shut |
 | Claude Code | Retry after API errors, continue after a usage limit resets, usage alerts |
 | Away | Apps "I'm leaving" never pauses. Terminals, code editors, browsers, Xcode, Simulator and call apps are already on it |
 
