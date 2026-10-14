@@ -2,27 +2,27 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key>
-    <string>Ephedrine</string>
-    <key>CFBundleDisplayName</key>
-    <string>Ephedrine</string>
-    <key>CFBundleIdentifier</key>
-    <string>io.github.3xyy.ephedrine</string>
-    <key>CFBundleVersion</key>
-    <string>1</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
-    <key>CFBundleExecutable</key>
-    <string>Ephedrine</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>14.4</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSAppleEventsUsageDescription</key>
-    <string>Ephedrine reads your Terminal tabs to see whether Claude Code is working, and types “continue” when it stops on an error.</string>
+	<key>CFBundleDisplayName</key>
+	<string>Ephedrine</string>
+	<key>CFBundleExecutable</key>
+	<string>Ephedrine</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.3xyy.ephedrine</string>
+	<key>CFBundleName</key>
+	<string>Ephedrine</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>2</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.4</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Ephedrine reads your Terminal tabs to see whether Claude Code is working, and types “continue” when it stops on an error.</string>
 </dict>
 </plist>
