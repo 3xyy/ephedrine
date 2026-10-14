@@ -636,14 +636,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         evaluate()
     }
 
-    func exitAway(_ why: String, notify: Bool = true) {
+    func exitAway(_ why: String) {
         awayTimer?.invalidate(); awayTimer = nil
         resumeApps()
         restoreBrightness()
         clearAwayState()
         awayMode = false; awayReturn = nil
         logLine("away mode OFF (\(why)): resumed apps, restored brightness")
-        if notify { awayNotify("Welcome back", "Resumed your apps and restored screen brightness.") }
+        awayNotify("Welcome back", "Resumed your apps and restored screen brightness.")
         evaluate()
     }
 
@@ -682,6 +682,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         "us.zoom.xos", "com.microsoft.teams2", "com.microsoft.teams", "com.apple.FaceTime",
         "com.cisco.webexmeetingsapp", "Cisco-Systems.Spark", "com.skype.skype",
         "com.tinyspeck.slackmacgap", "com.hnc.Discord",
+        // VPNs: frozen, they can cut the network Claude and Remote Control need
+        "com.cloudflare.1dot1dot1dot1.macos", "com.wireguard.macos", "com.tailscale.ipn.macos",
+        "io.tailscale.ipn.macsys", "com.nordvpn.macos", "com.expressvpn.ExpressVPN", "net.mullvad.vpn",
     ]
 
     func suspendApps() {
