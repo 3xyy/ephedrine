@@ -19,7 +19,7 @@ struct NowPane: View {
             }
         Section {
                 Button(controller.awayMode ? "I'm back, restore my apps" : "I'm leaving") { controller.toggleAway() }
-                Tip("Pauses other apps and blacks out the screen. Claude keeps working, then the Mac sleeps a minute after it's done. Move the mouse or type to restore everything.")
+                Tip("Pauses other apps and turns the screen off. Claude keeps working, then the Mac sleeps a minute after it's done. Move the mouse, type or open the lid to come back.")
             }
         Section("Stay awake") {
                 Picker("Stay awake", selection: Binding(get: { stayChoice }, set: setStay)) {
@@ -118,7 +118,7 @@ struct AwayPane: View {
 
     var body: some View {
         Section {
-            Text("“I'm leaving” pauses other apps and turns the screen black while keeping the Mac awake. Move the mouse or type to restore everything.")
+            Text("“I'm leaving” pauses other apps and turns the screen off. Claude keeps working, then the Mac sleeps a minute after it's done. Move the mouse, type or open the lid to come back.")
         }
         Section("Always kept running") {
             Text(AppController.awayKeepRunning.map(appName).filter { !$0.contains(".") }.sorted().joined(separator: ", "))

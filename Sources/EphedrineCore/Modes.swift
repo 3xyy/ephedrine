@@ -136,11 +136,18 @@ public struct AwayReturn {
 /// battery. Only counts while fully awake, and starts over after each sleep.
 public struct AwaySleep {
     public static let quiet: TimeInterval = 60
+    /// A longer pause between steps (3s apart) means the Mac was asleep.
+    public static let gap: TimeInterval = 10
     private var idleSince: Date?
+    private var lastStep: Date?
     public init() {}
 
-    /// True when it's time to sleep.
+    /// True when it's time to sleep. Time asleep never counts: on 2026-10-14
+    /// a tick while falling asleep started the quiet minute, and the wake 100s
+    /// later slept the Mac again the moment you came back.
     public mutating func step(away: Bool, needed: Bool, fullyAwake: Bool, now: Date) -> Bool {
+        defer { lastStep = now }
+        if let last = lastStep, now.timeIntervalSince(last) > Self.gap { idleSince = nil }
         guard away, !needed, fullyAwake else { idleSince = nil; return false }
         let since = idleSince ?? now
         idleSince = since
@@ -148,4 +155,11 @@ public struct AwaySleep {
         idleSince = nil   // a wake right after the sleep must not sleep again at once
         return true
     }
+}
+
+/// "I'm leaving" ends when the Mac wakes up with the lid open: you opened it or
+/// pressed a key. `sinceLastCheck` over AwaySleep.gap means it was asleep. A
+/// wake with the lid shut is a nap or a Remote Control check-in, not you.
+public func awayEndsOnWake(sinceLastCheck: TimeInterval, fullyAwake: Bool, lidClosed: Bool) -> Bool {
+    sinceLastCheck > AwaySleep.gap && fullyAwake && !lidClosed
 }

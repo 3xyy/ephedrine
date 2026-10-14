@@ -1154,37 +1154,55 @@ private func freshDefaults() -> UserDefaults {
     #expect(away.isBack(now: t0 + 3600, idleSeconds: 0.4))
 }
 
+/// Ticks AwaySleep every 3s from `from` through `to`, like the app's main
+/// loop, and returns the times it said "sleep now".
+private func awaySleeps(_ a: inout AwaySleep, from: TimeInterval, to: TimeInterval,
+                        needed: (TimeInterval) -> Bool = { _ in false },
+                        awake: (TimeInterval) -> Bool = { _ in true }) -> [TimeInterval] {
+    let t0 = Date(timeIntervalSince1970: 1_000_000)
+    return stride(from: from, through: to, by: 3).filter { t in
+        a.step(away: true, needed: needed(t), fullyAwake: awake(t), now: t0 + t)
+    }
+}
+
 @Test func leavingSleepsOnceNothingNeedsTheMac() {
     // "I'm leaving" used to hold the Mac awake until you came back, all night
     // on 2026-10-09 and 2026-10-13. Now it sleeps a minute after Claude is done.
     var a = AwaySleep()
-    let t0 = Date(timeIntervalSince1970: 1_000_000)
-    func step(_ t: TimeInterval, away: Bool = true, needed: Bool = false, awake: Bool = true) -> Bool {
-        a.step(away: away, needed: needed, fullyAwake: awake, now: t0 + t)
-    }
-    #expect(!step(0, needed: true))                 // Claude working
-    #expect(!step(10))                              // done: the quiet minute starts
-    #expect(!step(10 + AwaySleep.quiet - 1))
-    #expect(step(10 + AwaySleep.quiet))             // sleep now
-    #expect(!step(10 + AwaySleep.quiet + 3))        // woke right after: starts over, no instant re-sleep
+    // Claude works until 30s, then the quiet minute runs from the first idle tick (33s).
+    #expect(awaySleeps(&a, from: 0, to: 120, needed: { $0 < 33 }) == [33 + AwaySleep.quiet])
+    var b = AwaySleep()
+    #expect(awaySleeps(&b, from: 0, to: 300) == [60, 123, 186, 249])   // each sleep starts the minute over
 }
 
 @Test func leavingWaitsOutGapsAndNaps() {
     var a = AwaySleep()
+    // Claude picks up again between turns at 48s: the minute starts over at 51s.
+    #expect(awaySleeps(&a, from: 0, to: 120, needed: { $0 == 48 }) == [51 + AwaySleep.quiet])
+    var b = AwaySleep()
+    #expect(awaySleeps(&b, from: 0, to: 600, awake: { _ in false }).isEmpty)   // in a nap: nothing
+    var c = AwaySleep()
     let t0 = Date(timeIntervalSince1970: 1_000_000)
-    func step(_ t: TimeInterval, away: Bool = true, needed: Bool = false, awake: Bool = true) -> Bool {
-        a.step(away: away, needed: needed, fullyAwake: awake, now: t0 + t)
-    }
-    #expect(!step(0))
-    #expect(!step(50, needed: true))                // Claude picked up again between turns
-    #expect(!step(60))
-    #expect(!step(60 + AwaySleep.quiet - 1))
-    #expect(step(60 + AwaySleep.quiet))
-    a = AwaySleep()
-    #expect(!step(0, awake: false))                 // in a nap: nothing
-    #expect(!step(600, awake: false))
-    #expect(!step(700, away: false))                // not away
-    #expect(!step(800, away: false))
+    let notAway1 = c.step(away: false, needed: false, fullyAwake: true, now: t0)
+    let notAway2 = c.step(away: false, needed: false, fullyAwake: true, now: t0 + 600)
+    #expect(!notAway1 && !notAway2)
+}
+
+@Test func leavingDoesNotCountTimeAsleep() {
+    // 2026-10-14 03:52Z: "I'm leaving" slept the Mac, a tick right after the
+    // sleep request started a new quiet minute, and 100s later the wake itself
+    // read as a quiet minute: it slept again the instant you came back.
+    var a = AwaySleep()
+    #expect(awaySleeps(&a, from: 0, to: 63) == [60])              // sleep, plus one tick while falling asleep
+    #expect(awaySleeps(&a, from: 163, to: 220).isEmpty)           // woke 100s later: the minute starts over
+    #expect(awaySleeps(&a, from: 223, to: 223) == [223])          // a full minute after waking
+}
+
+@Test func wakingWithTheLidOpenEndsLeaving() {
+    #expect(awayEndsOnWake(sinceLastCheck: 100, fullyAwake: true, lidClosed: false))   // you opened it or pressed a key
+    #expect(!awayEndsOnWake(sinceLastCheck: 1, fullyAwake: true, lidClosed: false))    // no sleep in between
+    #expect(!awayEndsOnWake(sinceLastCheck: 100, fullyAwake: false, lidClosed: false)) // a nap
+    #expect(!awayEndsOnWake(sinceLastCheck: 100, fullyAwake: true, lidClosed: true))   // a check-in with the lid shut
 }
 
 @Test func leavingRightAfterComingBackIsIgnored() {

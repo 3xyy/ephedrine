@@ -57,6 +57,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var batteryStop = BatteryStop()                 // on battery at the floor: keep nothing awake until plugged in
     var awaySleep = AwaySleep()                     // "I'm leaving" sleeps once Claude is done
     var awayNeededCached = false                    // last tick: something still needed the Mac during "I'm leaving"
+    var lastAwayCheck = Date()                      // a long gap since means the Mac was asleep
     var extraActiveLabel: String?                   // which "also stay awake for" detector is holding it
     var sigtermSource: DispatchSourceSignal?
 
@@ -347,7 +348,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             // session-limit wait (which can be hours), but not while Claude is
             // actively generating or during a manual override. "I'm leaving"
             // has already blacked it out, so let it sleep and save the power.
-            let displayOff = awayMode || (settings.allowDisplaySleep && !busy && !manualActive && !claudeWorkingNow
+            // With the lid shut the screen is dark anyway, but holding the display
+            // awake kept it powered (2026-10-12: on for 9 minutes after the lid shut).
+            let lidShutAlone = lidIsClosed() && !externalDisplayActive()
+            let displayOff = awayMode || lidShutAlone || (settings.allowDisplaySleep && !busy && !manualActive && !claudeWorkingNow
                 && (extraActive || limitWaitNow))
             if awake.apply(system: true, display: !displayOff) {
                 logLine("keep-awake ON (\(displayOff ? "system-only" : "display+system"))")
@@ -635,33 +639,45 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     func enterAway() {
         awayMode = true; awayReturn = AwayReturn(enteredAt: Date())
         suspendApps()
-        dimScreen()
-        persistAwayState()   // crash-recovery: next launch un-freezes and restores brightness
+        // Display off, not brightness 0: nothing to restore, so it can't come
+        // back black (2026-10-14), and it saves more power.
+        sleepDisplayNow()
+        persistAwayState()   // crash-recovery: next launch un-freezes the apps
         awayTimer?.invalidate()
         let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.awayCheck() }
         RunLoop.main.add(t, forMode: .common)   // keeps running while a menu is open
         awayTimer = t
         awaySleep = AwaySleep()
-        logLine("away mode ON: paused \(suspendedPids.count) apps\(pausedList), dimmed the screen")
-        awayNotify("Away mode on", "Paused \(suspendedPids.count) apps and dimmed the screen. The Mac sleeps once Claude is done. Move the mouse or press a key when you're back.")
+        lastAwayCheck = Date()
+        logLine("away mode ON: paused \(suspendedPids.count) apps\(pausedList), turned the screen off")
+        awayNotify("Away mode on", "Paused \(suspendedPids.count) apps and turned the screen off. The Mac sleeps once Claude is done. Move the mouse or press a key when you're back.")
         evaluate()
     }
 
     func exitAway(_ why: String) {
         awayTimer?.invalidate(); awayTimer = nil
         resumeApps()
-        restoreBrightness()
+        restoreBrightness()   // only if an older version dimmed it (see recoverFromInterruptedAway)
         clearAwayState()
         awayMode = false; awayReturn = nil
-        logLine("away mode OFF (\(why)): resumed apps, restored brightness")
-        awayNotify("Welcome back", "Resumed your apps and restored screen brightness.")
+        logLine("away mode OFF (\(why)): resumed apps")
+        awayNotify("Welcome back", "Resumed your apps.")
         evaluate()
     }
 
     /// Runs every 1s while away: restore as soon as you move the mouse or type,
-    /// ignoring the first few seconds (the click that started it).
+    /// ignoring the first few seconds (the click that started it), or as soon
+    /// as the Mac wakes up with the lid open.
     func awayCheck() {
         guard awayMode, let r = awayReturn else { return }
+        let now = Date()
+        defer { lastAwayCheck = now }
+        if awayEndsOnWake(sinceLastCheck: now.timeIntervalSince(lastAwayCheck),
+                          fullyAwake: systemFullyAwake(fallback: !systemSleeping), lidClosed: lidIsClosed()) {
+            lastAwayReturnByInput = now
+            exitAway("woke up with the lid open")
+            return
+        }
         let idle = hidIdleSeconds()
         if r.isBack(now: Date(), idleSeconds: idle) {
             lastAwayReturnByInput = Date()
@@ -752,25 +768,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         if !pids.isEmpty { logLine("recovered from an interrupted away mode, resumed \(pids.count) apps") }
     }
 
-    typealias BrightGet = @convention(c) (UInt32, UnsafeMutablePointer<Float>) -> Int32
     typealias BrightSet = @convention(c) (UInt32, Float) -> Int32
     let displayServicesPath = "/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices"
-
-    func dimScreen() {
-        // Never dim unless the current brightness was read successfully:
-        // otherwise restoreBrightness() has nothing to restore to and the
-        // screen would stay black.
-        guard let h = dlopen(displayServicesPath, RTLD_LAZY),
-              let gp = dlsym(h, "DisplayServicesGetBrightness"),
-              let sp = dlsym(h, "DisplayServicesSetBrightness") else { logLine("dim unavailable"); return }
-        let disp = CGMainDisplayID()
-        var cur: Float = 0.5
-        guard unsafeBitCast(gp, to: BrightGet.self)(disp, &cur) == 0 else {
-            logLine("didn't dim: couldn't read the current brightness"); return
-        }
-        savedBrightness = cur
-        _ = unsafeBitCast(sp, to: BrightSet.self)(disp, 0.0)
-    }
 
     func restoreBrightness() {
         guard savedBrightness >= 0, let h = dlopen(displayServicesPath, RTLD_LAZY),
@@ -885,7 +884,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     // MARK: menu
 
     func statusText() -> String {
-        if awayMode { return "Away: \(suspendedPids.count) apps paused, screen dimmed" }
+        if awayMode { return "Away: \(suspendedPids.count) apps paused, screen off" }
         if lidPaused { return "Lid shut: \(suspendedPids.count) apps paused" }
         if batteryStop.stopped {
             return awakeBatteryFloor(settings.batteryFloor) >= lidOnlyPluggedIn
@@ -935,7 +934,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         menu.removeAllItems()
         addStatusAndUsage(to: menu)
         menu.addItem(awayMode ? item("I'm back, restore my apps", #selector(toggleAway))
-                              : item("I'm leaving", #selector(toggleAway), subtitle: "Pause apps, black screen, sleep when Claude's done"))
+                              : item("I'm leaving", #selector(toggleAway), subtitle: "Pause apps, screen off, sleep when Claude's done"))
         menu.addItem(stayAwakeMenuItem())
         menu.addItem(.separator())
         menu.addItem(item("Keep awake while Claude works", #selector(toggleEnabled), on: settings.enabled,

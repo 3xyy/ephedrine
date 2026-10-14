@@ -106,6 +106,15 @@ func requestSystemSleep() -> String? {
     return "no power manager connection, pmset sleepnow exit \(runToolStatus("/usr/bin/pmset", ["sleepnow"]))"
 }
 
+/// Turn the display off now, like `pmset displaysleepnow` (no admin rights
+/// needed). The Mac itself stays awake.
+func sleepDisplayNow() {
+    DispatchQueue.global(qos: .utility).async {
+        let r = runToolStatus("/usr/bin/pmset", ["displaysleepnow"])
+        if r != 0 { logLine("couldn't turn the display off (pmset displaysleepnow exit \(r))") }
+    }
+}
+
 /// "Turn display off when inactive" minutes from pmset (0 = Never/unknown).
 /// Still a subprocess, so callers cache it (see AppController.displaySleepMins).
 func systemDisplaySleepMinutes() -> Int {

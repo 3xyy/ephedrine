@@ -197,6 +197,9 @@ extension AppController {
             lidLastClosed = closed
             let caps = systemCapabilities().map { String(format: " (capabilities 0x%x)", $0) } ?? ""
             logLine((closed ? "lid closed" : "lid opened") + caps)
+            // Kept awake with the lid shut: turn the display off now rather than
+            // leave it powered until its idle timer runs out.
+            if closed && actual && fullyAwake && !externalDisplayActive() { sleepDisplayNow() }
         }
         updateLidPause(closed: closed)
         updateLidLock(closed: closed)
@@ -282,6 +285,7 @@ extension AppController {
             declareCheckInWake()
         case .fullyAwake(let after)?:
             logLine("Remote Control check-in: fully awake after \(Int(after))s, listening for \(Int(RemoteCheckIn.window / 60)) minutes")
+            sleepDisplayNow()   // the wake request turned the display on; the lid is shut
         case .ended(let why)?:
             releaseCheckInWake()
             switch why {

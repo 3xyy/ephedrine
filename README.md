@@ -20,7 +20,7 @@ I wanted to start a long Claude Code task, close the lid, and come back to finis
 - Remote Control check-ins (optional, off by default): with the lid shut and the Mac asleep, macOS still wakes it for a few seconds every 10 to 20 minutes. Ephedrine turns those into a full wake for 2 minutes, so `claude remote-control` can pick up a message you sent from your phone. If Claude starts working, the Mac stays awake until it's done, then goes back to sleep.
 - Terminal helpers (optional, Terminal.app): types `continue` when a session stops on an API error, waits out a usage limit that resets within 6 hours and resumes after it (on battery it only stays awake for the last hour), and notices Claude working on screen when no hook fires.
 - Shows your Claude session and weekly limits in the menu, with an alert at a level you pick.
-- "I'm leaving" (in the menu bar menu) pauses other apps and blacks out the screen while Claude works, then sleeps the Mac a minute after Claude is done. Move the mouse and everything comes back.
+- "I'm leaving" (in the menu bar menu) pauses other apps and turns the screen off while Claude works, then sleeps the Mac a minute after Claude is done. Move the mouse or open the lid and everything comes back.
 - "Stay awake" (menu bar menu or Settings) keeps the Mac awake for 30 minutes, 1 or 2 hours, or until you turn it off. With lid-closed mode set up, the lid can be shut too.
 - The menu says what's keeping the Mac awake, what happens next, and the battery limit while you're on battery.
 
@@ -64,7 +64,7 @@ you ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a dis
 
 The app is ad-hoc signed because I don't have an Apple Developer ID. macOS ties Terminal control and the keychain's Always Allow to the exact build, so after an upgrade it asks for those two again.
 
-Two private APIs are involved: `SACLockScreenImmediate` (login.framework) locks the screen when the lid closes, and DisplayServices dims the screen for "I'm leaving". If a macOS update removes one, that feature logs an error and everything else carries on.
+One private API is involved: `SACLockScreenImmediate` (login.framework) locks the screen when the lid closes. If a macOS update removes it, that feature logs an error and everything else carries on. (DisplayServices is only used to put the brightness back if an older version was interrupted while it had dimmed the screen.)
 
 ## Settings
 
