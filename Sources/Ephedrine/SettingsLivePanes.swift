@@ -148,6 +148,7 @@ struct AwayPane: View {
 }
 
 struct AboutPane: View {
+    @ObservedObject var settings: AppSettings
     let controller: AppController
     @ObservedObject var ui: SettingsUI
     let now: Date   // re-renders each second (terminal tab count, lid setup)
@@ -155,7 +156,16 @@ struct AboutPane: View {
     var body: some View {
         Group {
             Section {
-                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")
+                LabeledContent("Version", value: appVersion)
+                if let latest = controller.latestRelease {
+                    LabeledContent("Update available", value: latest.version)
+                    Button("See what's new…") { controller.openLatestRelease() }
+                    Tip("Upgrade with “brew upgrade 3xyy/tap/ephedrine”, then “ephedrine setup”.")
+                }
+                Toggle(isOn: $settings.checkForUpdates) {
+                    Text("Check for new versions")
+                    Tip("Asks GitHub every 6 hours. A newer version shows at the top of the menu.")
+                }
             }
             Section("Permissions") {
                 LabeledContent("Notifications", value: ui.notifications)

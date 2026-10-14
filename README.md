@@ -54,6 +54,8 @@ Nothing is requested until you click its button on the setup screen. You can reo
 | Keychain | Only the usage meter. It reads Claude Code's sign-in (`Claude Code-credentials`) and calls `api.anthropic.com/api/oauth/usage`, the same numbers `/usage` shows. That endpoint isn't documented, so it could change. |
 | Admin password, once | Only lid-closed mode. See below. |
 
+Besides the usage meter, the only network request is an update check: every 6 hours Ephedrine reads the Homebrew formula (`raw.githubusercontent.com/3xyy/homebrew-tap/main/Formula/ephedrine.rb`) and shows "Update available" at the top of the menu when it installs a newer version. Turn it off in Settings → About.
+
 A MacBook sleeps when the lid closes regardless of power assertions. The one switch that stops it is `pmset disablesleep`, which needs root, so lid-closed setup asks for your password once and installs `/etc/sudoers.d/ephedrine`, checked with `visudo`, containing exactly:
 
 ```

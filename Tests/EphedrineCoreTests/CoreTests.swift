@@ -1215,6 +1215,51 @@ private func awaySleeps(_ a: inout AwaySleep, from: TimeInterval, to: TimeInterv
     #expect(!AwayReturn.ignoresLeaving(lastReturnByInput: nil, now: back))
 }
 
+// ── Update check ──
+
+@Test func newerVersionComparesNumbers() {
+    #expect(isNewerVersion("v1.1.1", than: "1.1.0"))
+    #expect(isNewerVersion("v1.10.0", than: "1.9.9"))          // numbers, not text
+    #expect(isNewerVersion("1.2", than: "1.1.9"))
+    #expect(isNewerVersion("v2.0.0-beta.1", than: "1.9.0"))
+    #expect(!isNewerVersion("v1.1.0", than: "1.1.0"))
+    #expect(!isNewerVersion("1.1.0", than: "1.1"))             // missing parts count as 0
+    #expect(!isNewerVersion("1.1", than: "1.1.0"))
+    #expect(!isNewerVersion("v1.0.9", than: "1.1.0"))
+    #expect(!isNewerVersion("garbage", than: "1.0.0"))
+    #expect(!isNewerVersion("v1.2.0", than: "unknown"))        // can't tell, so don't nag
+}
+
+@Test func latestVersionFromTheFormula() {
+    // GitHub's API answered "rate limit exceeded" on a shared VPN address
+    // (2026-10-14), so the check reads the Homebrew formula instead: exactly
+    // what `brew upgrade` would install.
+    let formula = """
+    class Ephedrine < Formula
+      url "https://github.com/3xyy/ephedrine/archive/refs/tags/v1.2.0.tar.gz"
+      sha256 "3bdda200aa629edca59e906ad0598230e0f8d50154d0d089ac81964f9086042b"
+      head "https://github.com/3xyy/ephedrine.git", branch: "main"
+    """
+    let r = parseFormulaVersion(formula)
+    #expect(r?.version == "1.2.0")
+    #expect(r?.url == "https://github.com/3xyy/ephedrine/releases/tag/v1.2.0")
+    #expect(parseFormulaVersion(#"url "https://github.com/someone/else/archive/refs/tags/v9.0.0.tar.gz""#) == nil)
+    #expect(parseFormulaVersion(#"head "https://github.com/3xyy/ephedrine.git""#) == nil)
+    #expect(parseFormulaVersion("429: Too Many Requests") == nil)
+    #expect(parseFormulaVersion("<html>error</html>") == nil)
+}
+
+@Test func updateCheckSetting() {
+    let d = freshDefaults()
+    let s = AppSettings(defaults: d)
+    #expect(s.checkForUpdates)
+    var changed: [String] = []
+    s.onChange = { changed.append($0) }
+    s.checkForUpdates = false
+    #expect(changed == ["checkForUpdates"])
+    #expect(!AppSettings(defaults: d).checkForUpdates)
+}
+
 // ── First-run setup screen ──
 
 @Test func automationPermissionStates() {

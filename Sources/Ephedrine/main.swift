@@ -17,6 +17,8 @@ let leaseFallback: TimeInterval = 300   // used only if a marker file can't be p
 let tickInterval: TimeInterval = 3
 let preSleepWarning: TimeInterval = 10  // grace given after the notification before sleeping
 let usageRefresh: TimeInterval = 180    // how often to refetch Claude usage
+let updateCheckEvery: TimeInterval = 6 * 3600
+let appVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
 
 // ───────────────────────────── Controller ─────────────────────────────
 
@@ -58,6 +60,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var awaySleep = AwaySleep()                     // "I'm leaving" sleeps once Claude is done
     var awayNeededCached = false                    // last tick: something still needed the Mac during "I'm leaving"
     var lastAwayCheck = Date()                      // a long gap since means the Mac was asleep
+    var latestRelease: LatestRelease?               // set only when it's newer than this version
+    var lastUpdateCheck: Date?
     var extraActiveLabel: String?                   // which "also stay awake for" detector is holding it
     var sigtermSource: DispatchSourceSignal?
 
@@ -389,6 +393,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
         // Usage reads the keychain, so not before the setup screen has explained that.
         if settings.setupDone && (lastUsageFetch == nil || Date().timeIntervalSince(lastUsageFetch!) > usageRefresh) { fetchUsage() }
+        if settings.checkForUpdates && fullyAwake
+            && (lastUpdateCheck == nil || Date().timeIntervalSince(lastUpdateCheck!) > updateCheckEvery) { checkForUpdates() }
 
         tickCount += 1
         if (autoContinue || settings.autoResumeLimit || settings.keepAwakeClaudeWorking) && tickCount % 3 == 0 && !scanning {   // ~every 9s
@@ -790,6 +796,28 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
     // MARK: Claude usage
 
+    /// Reads the Homebrew formula; a newer version shows at the top of the menu.
+    func checkForUpdates() {
+        lastUpdateCheck = Date()
+        guard let url = URL(string: updateCheckURL) else { return }
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        req.setValue("Ephedrine/\(appVersion)", forHTTPHeaderField: "User-Agent")
+        URLSession.shared.dataTask(with: req) { data, resp, _ in
+            guard (resp as? HTTPURLResponse)?.statusCode == 200, let data = data,
+                  let latest = parseFormulaVersion(String(decoding: data, as: UTF8.self)) else { return }   // offline: try next time
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.settings.checkForUpdates else { return }
+                let newer = isNewerVersion(latest.version, than: appVersion)
+                if newer && self.latestRelease != latest { logLine("update available: \(latest.version) (running \(appVersion))") }
+                self.latestRelease = newer ? latest : nil
+            }
+        }.resume()
+    }
+
+    @objc func openLatestRelease() {
+        if let s = latestRelease?.url, let url = URL(string: s) { NSWorkspace.shared.open(url) }
+    }
+
     func fetchUsage() {
         guard !usageFetching else { return }
         usageFetching = true
@@ -986,6 +1014,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     }
 
     private func addStatusAndUsage(to menu: NSMenu) {
+        if let latest = latestRelease {
+            let u = item("Update available: Ephedrine \(latest.version)", #selector(openLatestRelease),
+                         subtitle: "See what's new and how to upgrade")
+            u.image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: nil)
+            menu.addItem(u)
+            menu.addItem(.separator())
+        }
         for line in [statusText(), nextText(), lidStatusText(), batteryText()].compactMap({ $0 }) {
             let l = NSMenuItem(title: line, action: nil, keyEquivalent: "")
             l.isEnabled = false
@@ -1080,6 +1115,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         case "lidRemoteCheckIn":
             updateCheckInActivity()
             logLine("Remote Control check-ins \(settings.lidRemoteCheckIn ? "on" : "off")")
+        case "checkForUpdates":
+            latestRelease = nil
+            lastUpdateCheck = nil   // on: check on the next tick
+            logLine("update check \(settings.checkForUpdates ? "on" : "off")")
         case "usageAlert":
             usageAlerts = UsageAlertTracker()
             fetchUsage()

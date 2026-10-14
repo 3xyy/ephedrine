@@ -110,7 +110,7 @@ struct SettingsView: View {
         case .now: NowPane(controller: controller, now: now)
         case .lid: LidPane(settings: settings, controller: controller, now: now)
         case .away: AwayPane(settings: settings)
-        case .about: AboutPane(controller: controller, ui: ui, now: now)
+        case .about: AboutPane(settings: settings, controller: controller, ui: ui, now: now)
         }
     }
 }

@@ -31,6 +31,8 @@ public final class AppSettings: ObservableObject {
     @Published public var lidClosedCapHours: Int { didSet { save(lidClosedCapHours, "lidClosedCapHours") } }
     /// Wake fully from lid-shut naps so `claude remote-control` can pick up messages (RemoteCheckIn).
     @Published public var lidRemoteCheckIn: Bool { didSet { save(lidRemoteCheckIn, "lidRemoteCheckIn") } }
+    /// Ask GitHub every few hours whether a newer version is out.
+    @Published public var checkForUpdates: Bool { didSet { save(checkForUpdates, "checkForUpdates") } }
     /// The first-run setup screen was finished (or skipped).
     @Published public var setupDone: Bool { didSet { save(setupDone, "setupDone") } }
     @Published public var menuBarIconStyle: MenuBarIconStyle { didSet { save(menuBarIconStyle.rawValue, "menuBarIconStyle") } }
@@ -61,6 +63,7 @@ public final class AppSettings: ObservableObject {
         lidHeatLimit = defaults.string(forKey: "lidHeatLimit").flatMap(LidHeatLimit.init(rawValue:)) ?? .hot
         lidClosedCapHours = defaults.object(forKey: "lidClosedCapHours") as? Int ?? 0
         lidRemoteCheckIn = bool("lidRemoteCheckIn", false)
+        checkForUpdates = bool("checkForUpdates", true)
         setupDone = bool("setupDone", false)
         menuBarIconStyle = defaults.string(forKey: "menuBarIconStyle").flatMap(MenuBarIconStyle.init(rawValue:)) ?? .mono
         // Drop duplicates (the old `defaults write … -array-add` tip could add some), keep order.
