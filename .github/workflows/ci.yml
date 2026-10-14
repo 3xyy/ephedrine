@@ -10,8 +10,17 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
+      - name: No SwiftUI @State
+        # @State is a compiler macro whose plugin ships with Xcode only, so it
+        # breaks the Homebrew build on Macs with just the Command Line Tools.
+        run: |
+          if grep -rnE '^[[:space:]]*@(State|StateObject|Observable|Entry)\b|#Preview' Sources; then
+            echo "Use an ObservableObject the window controller owns instead (see SettingsUI)."; exit 1
+          fi
       - name: Build
         run: swift build -c release
+      - name: Build with the Command Line Tools only
+        run: DEVELOPER_DIR=/Library/Developer/CommandLineTools swift build -c release --scratch-path .build-clt
       - name: Test
         run: swift test
       - name: Bundle the app

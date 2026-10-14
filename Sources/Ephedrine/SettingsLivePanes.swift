@@ -149,8 +149,8 @@ struct AwayPane: View {
 
 struct AboutPane: View {
     let controller: AppController
+    @ObservedObject var ui: SettingsUI
     let now: Date   // re-renders each second (terminal tab count, lid setup)
-    @State private var notifications = "Checking…"
 
     var body: some View {
         Group {
@@ -158,7 +158,7 @@ struct AboutPane: View {
                 LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")
             }
             Section("Permissions") {
-                LabeledContent("Notifications", value: notifications)
+                LabeledContent("Notifications", value: ui.notifications)
                 LabeledContent("Terminal control",
                                value: terminalControlStatus(tabs: controller.terminalTabsSeen, error: controller.terminalScanError))
                 LabeledContent("Lid-closed mode", value: controller.lidSetupOK ? "Set up" : "Not set up")
@@ -172,7 +172,7 @@ struct AboutPane: View {
         }
         .task {
             let s = await UNUserNotificationCenter.current().notificationSettings()
-            notifications = s.authorizationStatus == .authorized ? "Allowed" : "Off, so the pre-sleep warning won't show"
+            ui.notifications = s.authorizationStatus == .authorized ? "Allowed" : "Off, so the pre-sleep warning won't show"
         }
     }
 }

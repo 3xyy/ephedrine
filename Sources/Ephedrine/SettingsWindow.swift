@@ -29,14 +29,25 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     }
 }
 
+/// View state for the settings window. SwiftUI's @State is a compiler macro
+/// whose plugin ships with Xcode only, so with just the Command Line Tools
+/// (how Homebrew builds Ephedrine) it doesn't compile. Keep view state in an
+/// object the window controller owns instead; CI rejects @State in Sources.
+final class SettingsUI: ObservableObject {
+    @Published var pane: SettingsPane? = .now
+    @Published var loginChanged = 0           // bumped after a toggle so it redraws right away
+    @Published var notifications = "Checking…"
+}
+
 /// One window, created on first use and reused.
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private let clock = SettingsClock()
+    private let ui = SettingsUI()
 
     func show(settings: AppSettings, controller: AppController) {
         if window == nil {
-            let host = NSHostingController(rootView: SettingsView(settings: settings, controller: controller, clock: clock))
+            let host = NSHostingController(rootView: SettingsView(settings: settings, controller: controller, clock: clock, ui: ui))
             let w = NSWindow(contentViewController: host)
             w.title = "Ephedrine Settings"
             w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
@@ -74,32 +85,32 @@ struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     let controller: AppController
     @ObservedObject var clock: SettingsClock
-    @State private var pane: SettingsPane? = .now
+    @ObservedObject var ui: SettingsUI
     private var now: Date { clock.now }
 
     var body: some View {
         NavigationSplitView {
-            List(SettingsPane.allCases, selection: $pane) { p in
+            List(SettingsPane.allCases, selection: $ui.pane) { p in
                 Label(p.title, systemImage: p.symbol).tag(p)
             }
             .navigationSplitViewColumnWidth(170)
         } detail: {
-            Form { paneContent(pane ?? .now) }
+            Form { paneContent(ui.pane ?? .now) }
                 .formStyle(.grouped)
-                .navigationTitle((pane ?? .now).title)
+                .navigationTitle((ui.pane ?? .now).title)
         }
         .frame(minWidth: 640, minHeight: 440)
     }
 
     @ViewBuilder func paneContent(_ p: SettingsPane) -> some View {
         switch p {
-        case .general: GeneralPane(settings: settings, controller: controller, now: now)
+        case .general: GeneralPane(settings: settings, controller: controller, ui: ui, now: now)
         case .sleep: SleepPane(settings: settings, controller: controller)
         case .claude: ClaudePane(settings: settings)
         case .now: NowPane(controller: controller, now: now)
         case .lid: LidPane(settings: settings, controller: controller, now: now)
         case .away: AwayPane(settings: settings)
-        case .about: AboutPane(controller: controller, now: now)
+        case .about: AboutPane(controller: controller, ui: ui, now: now)
         }
     }
 }
@@ -114,8 +125,8 @@ struct Tip: View {
 struct GeneralPane: View {
     @ObservedObject var settings: AppSettings
     let controller: AppController
+    @ObservedObject var ui: SettingsUI
     let now: Date   // re-renders each second, so a change made in System Settings shows up
-    @State private var loginChanged = 0   // bumped after a toggle so it redraws right away
 
     var body: some View {
         Section {
@@ -140,11 +151,11 @@ struct GeneralPane: View {
                 Text("Let the screen sleep during background tasks")
                 Tip("When only a background task or a usage-limit wait is keeping the Mac awake, the display may still turn off. The screen stays on while Claude is working or while you've chosen to stay awake.")
             }
-            Toggle("Open at login", isOn: Binding(get: { _ = loginChanged; return SMAppService.mainApp.status == .enabled },
+            Toggle("Open at login", isOn: Binding(get: { _ = ui.loginChanged; return SMAppService.mainApp.status == .enabled },
                                                   set: { on in
                 do { if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } }
                 catch { logLine("login item toggle failed: \(error)") }
-                loginChanged += 1
+                ui.loginChanged += 1
             }))
         }
         Section("Menu bar icon") {

@@ -1,4 +1,5 @@
 .build/
+.build-clt/
 .swiftpm/
 *.xcodeproj
 .DS_Store
