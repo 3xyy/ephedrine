@@ -197,6 +197,13 @@ struct SleepPane: View {
             }
             Tip(settings.powerMode.tip)
         }
+        Section("On battery") {
+            Picker("Keep it awake", selection: $settings.batteryFloor) {
+                ForEach([30, 20, 10], id: \.self) { Text("Down to \($0)%").tag($0) }
+                Text("Only on the charger").tag(lidOnlyPluggedIn)
+            }
+            Tip("Covers everything Ephedrine keeps awake for: Claude, “I'm leaving”, Stay awake and the lid. At the limit it lets the Mac sleep until you plug it in, so the battery never runs flat.")
+        }
     }
 }
 

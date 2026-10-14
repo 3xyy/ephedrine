@@ -18,8 +18,10 @@ public enum LidGuard: String {
     case lowBattery, unplugged, hot
 }
 
-/// `lidBatteryFloor` value meaning "never on battery, only on the charger".
+/// `batteryFloor` value meaning "never on battery, only on the charger".
 public let lidOnlyPluggedIn = 100
+/// The lowest battery limit there is: nothing Ephedrine does runs a battery flat.
+public let minBatteryFloor = 10
 
 /// How hot the Mac may get before lid-closed mode gives up. macOS has no
 /// public °C reading; this is its thermal pressure, the one it throttles on.
@@ -60,7 +62,7 @@ public struct LidInputs {
     public var lidClosed: Bool
     public var onBattery: Bool
     public var batteryPercent: Int?   // nil = no battery / unknown
-    public var batteryFloor: Int      // 0 = no battery guard
+    public var batteryFloor: Int      // the battery setting (awakeBatteryFloor applies the 10% minimum)
     public var hot: Bool              // past the heat limit (lidTooHot)
     public var closedCap: TimeInterval   // Claude-driven mode stops once the lid's been shut this long; 0 = never
     public var checkIn: Bool         // a Remote Control check-in is open (RemoteCheckIn.isOpen)
@@ -130,16 +132,19 @@ public func stepLid(_ s: inout LidState, _ i: LidInputs) -> LidOutput {
 
 /// The battery or heat limit that says "sleep anyway" right now, if any.
 public func lidGuard(_ i: LidInputs) -> LidGuard? {
-    let unplugged = i.onBattery && i.batteryFloor >= lidOnlyPluggedIn
-    let low = i.onBattery && i.batteryFloor > 0 && (i.batteryPercent.map { $0 <= i.batteryFloor } ?? false)
+    let floor = awakeBatteryFloor(i.batteryFloor)
+    let unplugged = i.onBattery && floor >= lidOnlyPluggedIn
+    let low = i.onBattery && (i.batteryPercent.map { $0 <= floor } ?? false)
     return i.hot ? .hot : unplugged ? .unplugged : low ? .lowBattery : nil
 }
 
 /// On battery at or below this, Ephedrine stops keeping the Mac awake for
-/// anything ("I'm leaving", Stay awake, Claude, usage-limit waits), so a night
-/// on battery can't end with a dead Mac. Follows the lid-closed "On battery"
-/// choice, kept between 10% and 30%.
-public func awakeBatteryFloor(lidFloor: Int) -> Int { min(30, max(10, lidFloor)) }
+/// anything ("I'm leaving", Stay awake, Claude, lid mode, usage-limit waits),
+/// so a night on battery can't end with a dead Mac. The battery setting, never
+/// under 10%; `lidOnlyPluggedIn` means never on battery at all.
+public func awakeBatteryFloor(_ setting: Int) -> Int {
+    setting >= lidOnlyPluggedIn ? lidOnlyPluggedIn : max(minBatteryFloor, setting)
+}
 
 /// Latches when the battery reaches the floor and holds until the Mac is
 /// plugged in, so hovering around the floor can't flip keep-awake on and off.
@@ -187,12 +192,13 @@ public struct CheckInInputs {
     public var sleepStarting: Bool    // macOS announced a sleep in the last minute
     public var externalDisplay: Bool
     public var guarded: Bool          // lidGuard says sleep anyway
+    public var onBattery: Bool        // check in less often
     public var now: Date
     public init(enabled: Bool, lidClosed: Bool, fullyAwake: Bool, sleepStarting: Bool,
-                externalDisplay: Bool, guarded: Bool, now: Date) {
+                externalDisplay: Bool, guarded: Bool, onBattery: Bool = false, now: Date) {
         self.enabled = enabled; self.lidClosed = lidClosed; self.fullyAwake = fullyAwake
         self.sleepStarting = sleepStarting; self.externalDisplay = externalDisplay
-        self.guarded = guarded; self.now = now
+        self.guarded = guarded; self.onBattery = onBattery; self.now = now
     }
 }
 
@@ -202,8 +208,10 @@ public struct RemoteCheckIn: Equatable {
     /// A nap that hasn't become a full wake by now won't (on 2026-10-05 sleep
     /// switched off inside a nap held the Mac there, no Wi-Fi, for 74 minutes).
     public static let fullWakeTimeout: TimeInterval = 30
-    /// Between check-ins, so clustered naps don't each wake the Mac.
+    /// Between check-ins, so clustered naps don't each wake the Mac. Naps can
+    /// come every 5 minutes, which on battery meant 2 minutes awake in every 5.
     public static let spacing: TimeInterval = 300
+    public static let spacingOnBattery: TimeInterval = 900
     /// Not right as the lid closes: capabilities drop the same way while it falls asleep.
     public static let afterClose: TimeInterval = 60
 
@@ -233,7 +241,7 @@ public struct RemoteCheckIn: Equatable {
         }
         guard i.enabled, i.lidClosed, !i.fullyAwake, !i.sleepStarting, !i.externalDisplay, !i.guarded,
               let closed = closedSince, i.now.timeIntervalSince(closed) >= Self.afterClose,
-              i.now.timeIntervalSince(lastStart) >= Self.spacing else { return nil }
+              i.now.timeIntervalSince(lastStart) >= (i.onBattery ? Self.spacingOnBattery : Self.spacing) else { return nil }
         startedAt = i.now; awakeAt = nil; lastStart = i.now
         return .started
     }

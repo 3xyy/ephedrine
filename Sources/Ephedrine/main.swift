@@ -55,6 +55,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var checkInWakeID = IOPMAssertionID(0)          // the "user is active" request that makes a nap a full wake
     var checkInActivity: NSObjectProtocol?          // keeps App Nap from slowing the tick while check-ins are on
     var batteryStop = BatteryStop()                 // on battery at the floor: keep nothing awake until plugged in
+    var awaySleep = AwaySleep()                     // "I'm leaving" sleeps once Claude is done
+    var awayNeededCached = false                    // last tick: something still needed the Mac during "I'm leaving"
+    var extraActiveLabel: String?                   // which "also stay awake for" detector is holding it
     var sigtermSource: DispatchSourceSignal?
 
     // continueQueue-confined state (only touched on continueQueue)
@@ -177,9 +180,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(willSleep), name: NSWorkspace.willSleepNotification, object: nil)
 
-        tick = Timer.scheduledTimer(withTimeInterval: tickInterval, repeats: true) { [weak self] _ in
-            self?.evaluate()
-        }
+        // .common: a default-mode timer stops while Ephedrine's menu is open, and
+        // a menu left open would freeze every decision, the battery limit included.
+        let t = Timer(timeInterval: tickInterval, repeats: true) { [weak self] _ in self?.evaluate() }
+        RunLoop.main.add(t, forMode: .common)
+        tick = t
         logLine("Ephedrine started")
         refreshDisplaySleepIfStale()
         setupWindow.onClose = { [weak self] in self?.settings.setupDone = true }
@@ -273,51 +278,60 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         // 1am until it died; only lid mode had a battery limit.
         let charge = batteryPercent()
         if batteryStop.step(onBattery: !onACPower(), percent: charge,
-                            floor: awakeBatteryFloor(lidFloor: settings.lidBatteryFloor)) {
+                            floor: awakeBatteryFloor(settings.batteryFloor)) {
             let pct = charge ?? 0
-            manualKeepAwake = false; keepAwakeUntil = nil
-            logLine("battery at \(pct)%, no longer keeping the Mac awake until it's plugged in")
-            if awayMode { DispatchQueue.main.async { [weak self] in self?.exitAway("battery at \(pct)%", notify: false) } }
-            batteryNotify("Battery at \(pct)%", "Ephedrine stopped keeping the Mac awake"
-                          + (awayMode ? " and ended “I'm leaving”" : "") + ", so it can sleep. Plug it in and it carries on.")
+            let wasHolding = awake.systemOn || awayMode || lidActive
+            manualKeepAwake = false; keepAwakeUntil = nil; lidState.session = nil
+            if awakeBatteryFloor(settings.batteryFloor) >= lidOnlyPluggedIn {
+                logLine("on battery: keeping the Mac awake only on the charger")
+                if wasHolding { batteryNotify("On battery", "Ephedrine only keeps the Mac awake on the charger, so it can sleep now.") }
+            } else {
+                logLine("battery at \(pct)%, no longer keeping the Mac awake until it's plugged in")
+                if wasHolding { batteryNotify("Battery at \(pct)%", "Ephedrine stopped keeping the Mac awake, so it can sleep. Plug it in and it carries on.") }
+            }
         }
         let lowBattery = batteryStop.stopped
 
         let busy = activeSessionCount() > 0
-        let manualActive = !lowBattery && (manualKeepAwake || keepAwakeUntil != nil || awayMode)
+        let manualActive = !lowBattery && (manualKeepAwake || keepAwakeUntil != nil)
         var extraActive = false
         if settings.enabled && !busy && !manualActive && !settings.detectors.isEmpty {
             // Detectors spawn `ps`, so they run off-main; evaluate uses the
             // result of the previous scan (≤1 tick stale; the lease-based
-            // logic has minutes of slack).
+            // logic has minutes of slack). Not rescanned in a nap: a command
+            // seen for one nap flipped "work finished" and the countdown.
             extraActive = extraActiveCached
-            if !detectorScanInFlight {
+            if !detectorScanInFlight && fullyAwake {
                 detectorScanInFlight = true
                 let keys = settings.detectors
                 DispatchQueue.global(qos: .utility).async { [weak self] in
                     let ps = PSCache()   // one ps spawn per format, shared by all detectors
-                    let active = self?.detectors.contains { keys.contains($0.key) && $0.check(ps) } ?? false
+                    let hit = self?.detectors.first { keys.contains($0.key) && $0.check(ps) }?.label
                     DispatchQueue.main.async {
-                        self?.extraActiveCached = active
+                        self?.extraActiveCached = hit != nil
+                        self?.extraActiveLabel = hit
                         self?.detectorScanInFlight = false
                     }
                 }
             }
         } else {
             extraActiveCached = false
+            extraActiveLabel = nil
         }
         let claudeWorkingNow = settings.keepAwakeClaudeWorking && claudeWorkingCached
         let limitWaitNow = settings.autoResumeLimit && limitWaitPending
         let blocked = busy || extraActive || claudeWorkingNow || limitWaitNow
-        updateLidMode(claudeBusy: settings.enabled && (busy || claudeWorkingNow || limitWaitNow || (autoContinue && retryPending)))
+        let claudeNeeds = busy || claudeWorkingNow || limitWaitNow || (autoContinue && retryPending)
+        updateLidMode(claudeBusy: settings.enabled && claudeNeeds)
 
         if blocked && !wasBlocked { armed = false; cancelPendingSleep() }
         if !blocked && wasBlocked { armed = true; idleSince = Date(); cancelPendingSleep(); logLine("work finished, sleep countdown armed") }
         wasBlocked = blocked
 
         // The master switch gates the automatic behavior only; an explicit
-        // "Stay awake" / "I'm leaving" always does what it says.
-        let keepAwake = !lowBattery && ((settings.enabled && blocked) || manualActive)
+        // "Stay awake" / "I'm leaving" always does what it says. "I'm leaving"
+        // holds the Mac only while Claude needs it (AwaySleep below).
+        let keepAwake = !lowBattery && (((settings.enabled || awayMode) && blocked) || manualActive)
         if keepAwake {
             // Screen may sleep for pure background reasons: detector activity or a
             // session-limit wait (which can be hours), but not while Claude is
@@ -332,13 +346,24 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             if awake.apply(system: false, display: false) { logLine("keep-awake OFF") }
         }
 
+        // "I'm leaving": sleep once Claude (not a detector) has been done for a
+        // minute. It used to hold the Mac awake until you came back, which on
+        // 2026-10-09 and 2026-10-13 meant all night on battery.
+        let awayNeeded = !lowBattery && (claudeNeeds || manualActive || lidState.session != nil || checkIn.isOpen)
+        awayNeededCached = awayNeeded
+        if awaySleep.step(away: awayMode, needed: awayNeeded, fullyAwake: fullyAwake, now: Date()) {
+            logLine("I'm leaving: nothing has needed the Mac for a minute, sleeping")
+            doSleep()
+        }
+
         var title = ""
         if manualActive, !busy, let until = keepAwakeUntil {
             title = fmtCountdown(Int(until.timeIntervalSinceNow))
         }
 
         // A one-off lid-closed session is an explicit "don't sleep", like a manual override.
-        if settings.enabled && armed && !blocked && !manualActive && lidState.session == nil {
+        // Not in a nap: the countdown and its warning there are pointless.
+        if settings.enabled && armed && !blocked && !manualActive && !awayMode && fullyAwake && lidState.session == nil {
             if let t = autoSleepTitle() { title = t }
         } else {
             // Includes a manual override starting mid-warning: a stale
@@ -602,9 +627,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         dimScreen()
         persistAwayState()   // crash-recovery: next launch un-freezes and restores brightness
         awayTimer?.invalidate()
-        awayTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.awayCheck() }
+        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.awayCheck() }
+        RunLoop.main.add(t, forMode: .common)   // keeps running while a menu is open
+        awayTimer = t
+        awaySleep = AwaySleep()
         logLine("away mode ON: paused \(suspendedPids.count) apps\(pausedList), dimmed the screen")
-        awayNotify("Away mode on", "Paused \(suspendedPids.count) apps and dimmed the screen. Move the mouse or press a key when you're back.")
+        awayNotify("Away mode on", "Paused \(suspendedPids.count) apps and dimmed the screen. The Mac sleeps once Claude is done. Move the mouse or press a key when you're back.")
         evaluate()
     }
 
@@ -691,8 +719,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             try? d.write(to: URL(fileURLWithPath: awayStatePath))
         }
         try? suspendedPids.map(String.init).joined(separator: " ").write(toFile: pausedPidsPath, atomically: true, encoding: .utf8)
+        updateWatchdog()   // un-pauses them if Ephedrine dies, not only in lid mode
     }
-    func clearAwayState() { try? fm.removeItem(atPath: awayStatePath); try? fm.removeItem(atPath: pausedPidsPath) }
+    func clearAwayState() {
+        try? fm.removeItem(atPath: awayStatePath); try? fm.removeItem(atPath: pausedPidsPath)
+        updateWatchdog()
+    }
     func recoverFromInterruptedAway() {
         guard let d = fm.contents(atPath: awayStatePath),
               let obj = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return }
@@ -841,7 +873,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     func statusText() -> String {
         if awayMode { return "Away: \(suspendedPids.count) apps paused, screen dimmed" }
         if lidPaused { return "Lid shut: \(suspendedPids.count) apps paused" }
-        if batteryStop.stopped { return "Battery at \(batteryPercent() ?? 0)%, letting the Mac sleep until it's plugged in" }
+        if batteryStop.stopped {
+            return awakeBatteryFloor(settings.batteryFloor) >= lidOnlyPluggedIn
+                ? "On battery: Ephedrine keeps the Mac awake only on the charger"
+                : "Battery at \(batteryPercent() ?? 0)%, letting the Mac sleep until it's plugged in"
+        }
         if manualKeepAwake { return "Awake until you turn it off" }
         if let until = keepAwakeUntil { return "Awake for \(fmtCountdown(Int(until.timeIntervalSinceNow))) more" }
         if !settings.enabled { return "Off, macOS sleeps as usual" }
@@ -849,6 +885,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         if n > 0 { return "Awake, Claude is working" + (n > 1 ? " (\(n) sessions)" : "") }
         if settings.keepAwakeClaudeWorking && claudeWorkingCached { return "Awake, Claude is busy in Terminal" }
         if settings.autoResumeLimit && limitWaitPending { return "Awake until a usage limit resets" }
+        if extraActiveCached, let l = extraActiveLabel { return "Awake: " + l.prefix(1).lowercased() + l.dropFirst() }
         if extraActiveCached { return "Awake, a background task is running" }
         if armed && settings.finishMode != .stayNormal && autoSleepAllowed() {
             if let at = pendingSleepAt { return "Sleeping in \(max(0, Int(at.timeIntervalSinceNow)))s…" }
@@ -857,13 +894,33 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         return "Idle"
     }
 
+    /// What happens next, for the menu and the Now pane (nil when the status line says it all).
+    func nextText() -> String? {
+        if batteryStop.stopped { return nil }
+        if awayMode { return awayNeededCached ? "Sleeps a minute after Claude is done" : "Sleeping within a minute" }
+        if manualKeepAwake || keepAwakeUntil != nil || !settings.enabled || !wasBlocked { return nil }
+        guard autoSleepAllowed(), settings.finishMode != .stayNormal else { return "Then macOS sleeps as usual" }
+        let g = Int(effectiveGraceSeconds())
+        let wait = g < 60 ? "\(g) seconds" : "\(g / 60) min"
+        return settings.finishMode == .alwaysSleep ? "Then sleeps \(wait) after it's done" : "Then sleeps once you've been away \(wait)"
+    }
+
+    /// The battery limit, shown while on battery and something is being kept awake.
+    func batteryText() -> String? {
+        guard !onACPower(), !batteryStop.stopped, let pct = batteryPercent(),
+              awake.systemOn || awayMode || lidActive else { return nil }
+        return "On battery (\(pct)%): stops keeping it awake at \(awakeBatteryFloor(settings.batteryFloor))%"
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
         if settings.setupDone && (lastUsageFetch == nil || Date().timeIntervalSince(lastUsageFetch!) > 60) { fetchUsage() }
         refreshDisplaySleepIfStale()
         menu.removeAllItems()
         addStatusAndUsage(to: menu)
         menu.addItem(awayMode ? item("I'm back, restore my apps", #selector(toggleAway))
-                              : item("I'm leaving", #selector(toggleAway), subtitle: "Pause apps and dim the screen"))
+                              : item("I'm leaving", #selector(toggleAway), subtitle: "Pause apps, black screen, sleep when Claude's done"))
+        menu.addItem(stayAwakeMenuItem())
+        menu.addItem(.separator())
         menu.addItem(item("Keep awake while Claude works", #selector(toggleEnabled), on: settings.enabled,
                           subtitle: settings.enabled ? nil : "Off, so macOS sleeps as usual"))
         let s = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
@@ -886,12 +943,35 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         return it
     }
 
+    private func stayAwakeMenuItem() -> NSMenuItem {
+        let sub = NSMenu()
+        for (title, mins) in [("For 30 minutes", 30), ("For 1 hour", 60), ("For 2 hours", 120), ("Until I turn it off", 0)] {
+            let it = item(title, #selector(stayAwakeChosen(_:)), on: mins == 0 && manualKeepAwake)
+            it.tag = mins
+            sub.addItem(it)
+        }
+        if manualKeepAwake || keepAwakeUntil != nil {
+            sub.addItem(.separator())
+            let off = item("Turn off", #selector(stayAwakeChosen(_:)))
+            off.tag = -1
+            sub.addItem(off)
+        }
+        if lidSetupOK {
+            sub.addItem(.separator())
+            let note = NSMenuItem(title: "The lid can be shut too", action: nil, keyEquivalent: "")
+            note.isEnabled = false
+            sub.addItem(note)
+        }
+        let holder = NSMenuItem(title: "Stay awake", action: nil, keyEquivalent: "")
+        holder.submenu = sub
+        if manualKeepAwake { holder.subtitle = "Until you turn it off" }
+        else if let u = keepAwakeUntil { holder.subtitle = "\(fmtDuration(Int(u.timeIntervalSinceNow))) left" }
+        return holder
+    }
+
     private func addStatusAndUsage(to menu: NSMenu) {
-        let header = NSMenuItem(title: statusText(), action: nil, keyEquivalent: "")
-        header.isEnabled = false
-        menu.addItem(header)
-        if let lid = lidStatusText() {
-            let l = NSMenuItem(title: lid, action: nil, keyEquivalent: "")
+        for line in [statusText(), nextText(), lidStatusText(), batteryText()].compactMap({ $0 }) {
+            let l = NSMenuItem(title: line, action: nil, keyEquivalent: "")
             l.isEnabled = false
             menu.addItem(l)
         }
@@ -921,13 +1001,31 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     }
 
     @objc func toggleEnabled() { settings.enabled.toggle() }
-    func stayAwakeIndefinitely() { manualKeepAwake = true; keepAwakeUntil = nil; logLine("stay awake until turned off"); evaluate() }
+    /// Stay awake also keeps it awake with the lid shut once lid setup is done
+    /// (one control instead of separate lid-closed sessions).
+    func stayAwakeIndefinitely() {
+        manualKeepAwake = true; keepAwakeUntil = nil
+        if lidSetupOK { lidState.session = .indefinite; lidState.tripped = nil }
+        logLine("stay awake until turned off" + (lidSetupOK ? ", lid can be shut" : "")); evaluate()
+    }
     func stayAwake(minutes: Int) {
         manualKeepAwake = false
-        keepAwakeUntil = Date().addingTimeInterval(TimeInterval(minutes * 60))
-        logLine("keep awake for \(minutes) min"); evaluate()
+        let until = Date().addingTimeInterval(TimeInterval(minutes * 60))
+        keepAwakeUntil = until
+        if lidSetupOK { lidState.session = .until(until); lidState.tripped = nil }
+        logLine("keep awake for \(minutes) min" + (lidSetupOK ? ", lid can be shut" : "")); evaluate()
     }
-    func stopStayAwake() { manualKeepAwake = false; keepAwakeUntil = nil; evaluate() }
+    func stopStayAwake() {
+        manualKeepAwake = false; keepAwakeUntil = nil; lidState.session = nil
+        logLine("stay awake turned off"); evaluate()
+    }
+    @objc func stayAwakeChosen(_ sender: NSMenuItem) {
+        switch sender.tag {
+        case -1: stopStayAwake()
+        case 0:  stayAwakeIndefinitely()
+        default: stayAwake(minutes: sender.tag)
+        }
+    }
     @objc func resetIdle() {
         clearMarkers(); wasBlocked = false; armed = false; cancelPendingSleep()
         awake.apply(system: false, display: false)

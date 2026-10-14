@@ -129,3 +129,23 @@ public struct AwayReturn {
         return now.timeIntervalSince(back) < 2
     }
 }
+
+/// "I'm leaving": once nothing has needed the Mac for `quiet` seconds (Claude
+/// done, no usage-limit wait, no Stay awake), it's time to sleep. It used to
+/// hold the Mac awake until you came back, and twice that meant all night on
+/// battery. Only counts while fully awake, and starts over after each sleep.
+public struct AwaySleep {
+    public static let quiet: TimeInterval = 60
+    private var idleSince: Date?
+    public init() {}
+
+    /// True when it's time to sleep.
+    public mutating func step(away: Bool, needed: Bool, fullyAwake: Bool, now: Date) -> Bool {
+        guard away, !needed, fullyAwake else { idleSince = nil; return false }
+        let since = idleSince ?? now
+        idleSince = since
+        guard now.timeIntervalSince(since) >= Self.quiet else { return false }
+        idleSince = nil   // a wake right after the sleep must not sleep again at once
+        return true
+    }
+}

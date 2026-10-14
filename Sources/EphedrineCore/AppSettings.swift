@@ -21,7 +21,9 @@ public final class AppSettings: ObservableObject {
     @Published public var autoResumeLimit: Bool { didSet { save(autoResumeLimit, "autoResumeLimit") } }
     @Published public var keepAwakeClaudeWorking: Bool { didSet { save(keepAwakeClaudeWorking, "keepAwakeClaudeWorking") } }
     @Published public var lidWhileClaude: Bool { didSet { save(lidWhileClaude, "lidWhileClaude") } }
-    @Published public var lidBatteryFloor: Int { didSet { save(lidBatteryFloor, "lidBatteryFloor") } }
+    /// On battery, nothing is kept awake at or below this % (10, 20, 30, or
+    /// lidOnlyPluggedIn = never on battery). Key kept from when only lid mode used it.
+    @Published public var batteryFloor: Int { didSet { save(batteryFloor, "lidBatteryFloor") } }
     @Published public var lidPauseApps: Bool { didSet { save(lidPauseApps, "lidPauseApps") } }
     @Published public var lidLockOnClose: Bool { didSet { save(lidLockOnClose, "lidLockOnClose") } }
     @Published public var lidHeatLimit: LidHeatLimit { didSet { save(lidHeatLimit.rawValue, "lidHeatLimit") } }
@@ -51,7 +53,9 @@ public final class AppSettings: ObservableObject {
         autoResumeLimit = bool("autoResumeLimit", false)
         keepAwakeClaudeWorking = bool("keepAwakeClaudeWorking", false)
         lidWhileClaude = bool("lidWhileClaude", true)
-        lidBatteryFloor = defaults.object(forKey: "lidBatteryFloor") as? Int ?? 20
+        let floor = defaults.object(forKey: "lidBatteryFloor") as? Int ?? 20
+        batteryFloor = floor
+        if floor < minBatteryFloor { defaults.set(minBatteryFloor, forKey: "lidBatteryFloor"); batteryFloor = minBatteryFloor }   // "No limit" is gone
         lidPauseApps = bool("lidPauseApps", true)
         lidLockOnClose = bool("lidLockOnClose", true)
         lidHeatLimit = defaults.string(forKey: "lidHeatLimit").flatMap(LidHeatLimit.init(rawValue:)) ?? .hot

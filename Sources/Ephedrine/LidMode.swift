@@ -18,7 +18,6 @@ import EphedrineCore
 
 let lidSudoersPath = "/etc/sudoers.d/ephedrine"
 let lidMarkerPath = "\(home)/.claude/ephedrine/lid-sleep-disabled"   // exists ⇔ we turned it on
-let lidBatteryFloors = [0, 10, 20, 30]
 
 // ── System state ──
 
@@ -186,7 +185,7 @@ extension AppController {
         let thermal = ProcessInfo.processInfo.thermalState
         var inputs = LidInputs(
             whileClaude: settings.lidWhileClaude, claudeBusy: claudeBusy, lidClosed: closed,
-            onBattery: !onACPower(), batteryPercent: battery, batteryFloor: settings.lidBatteryFloor,
+            onBattery: !onACPower(), batteryPercent: battery, batteryFloor: settings.batteryFloor,
             hot: lidTooHot(thermal, limit: settings.lidHeatLimit),
             closedCap: TimeInterval(settings.lidClosedCapHours * 3600), now: Date())
         // Before reading the switch: starting a check-in turns sleep off right away.
@@ -204,7 +203,11 @@ extension AppController {
         guard lidSetupOK else { return }
 
         let out = stepLid(&lidState, inputs)
-        if let e = out.sessionEnded { logLine("lid-closed session ended (\(e.rawValue))") }
+        if let e = out.sessionEnded {
+            logLine("lid-closed session ended (\(e.rawValue))")
+            // Stay awake drives the session; a battery or heat stop ends both.
+            if e != .timeUp { manualKeepAwake = false; keepAwakeUntil = nil }
+        }
         if let g = out.newlyTripped {
             let why: String
             switch g {
@@ -246,7 +249,7 @@ extension AppController {
         } else if !actual && ours {
             // Turned off elsewhere (watchdog, or by hand), so forget it.
             try? fm.removeItem(atPath: lidMarkerPath)
-            lidWatchdog.stop()
+            updateWatchdog()
         }
     }
 
@@ -258,7 +261,7 @@ extension AppController {
         let ev = checkIn.step(CheckInInputs(
             enabled: enabled, lidClosed: closed, fullyAwake: fullyAwake,
             sleepStarting: Date().timeIntervalSince(lastWillSleep) < 60,
-            externalDisplay: externalDisplayActive(), guarded: guarded, now: Date()))
+            externalDisplay: externalDisplayActive(), guarded: guarded, onBattery: !onACPower(), now: Date()))
         switch ev {
         case .started?:
             let caps = systemCapabilities().map { String(format: " (capabilities 0x%x)", $0) } ?? ""
@@ -266,11 +269,11 @@ extension AppController {
             lidState.restartClosedClock(now: Date())
             lidFlipGeneration += 1   // supersedes any flip still finishing
             fm.createFile(atPath: lidMarkerPath, contents: nil)
-            lidWatchdog.start()
+            updateWatchdog()
             // Sleep off first: a full wake with the lid shut would otherwise clamshell-sleep at once.
             guard lidSwitch.setSync(true) else {
                 try? fm.removeItem(atPath: lidMarkerPath)
-                lidWatchdog.stop()
+                updateWatchdog()
                 checkIn.cancel()
                 logLine("Remote Control check-in skipped: `sudo pmset` failed")
                 return
@@ -317,13 +320,21 @@ extension AppController {
         }
     }
 
+    /// The watchdog undoes disablesleep and un-pauses apps if Ephedrine dies.
+    /// It runs while either is ours, not only in lid mode.
+    func updateWatchdog() {
+        let pids = (try? String(contentsOfFile: pausedPidsPath, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if fm.fileExists(atPath: lidMarkerPath) || !pids.isEmpty { lidWatchdog.start() } else { lidWatchdog.stop() }
+    }
+
     private func flipLid(_ on: Bool) {
         lidApplying = true
         lidFlipGeneration += 1
         let generation = lidFlipGeneration
         if on {
             fm.createFile(atPath: lidMarkerPath, contents: nil)   // before the switch, so a crash mid-flip is still cleaned up
-            lidWatchdog.start()
+            updateWatchdog()
         }
         lidSwitch.setAsync(on) { [weak self] ok in
             DispatchQueue.main.async {
@@ -334,7 +345,7 @@ extension AppController {
                 guard generation == self.lidFlipGeneration else { return }
                 guard ok else {
                     logLine("lid-closed mode: `sudo pmset` failed (setup missing?), retrying in 1 min")
-                    if on { try? fm.removeItem(atPath: lidMarkerPath); self.lidWatchdog.stop() }
+                    if on { try? fm.removeItem(atPath: lidMarkerPath); self.updateWatchdog() }
                     self.lidSetupOK = lidSetupInstalled()
                     self.lidRetryAfter = Date().addingTimeInterval(60)
                     return
@@ -344,7 +355,7 @@ extension AppController {
                     logLine("lid-closed mode ON, the Mac stays awake with the lid shut")
                 } else {
                     try? fm.removeItem(atPath: lidMarkerPath)
-                    self.lidWatchdog.stop()
+                    self.updateWatchdog()
                     logLine("lid-closed mode OFF")
                     // Nobody can be using a Mac with its lid shut and no external
                     // display, so sleep now instead of running the idle countdown.
@@ -395,7 +406,7 @@ extension AppController {
         lidFlipGeneration += 1   // supersedes any flip still finishing
         guard lidSwitch.setSync(false) else { logLine("lid-closed mode: couldn't turn off before sleeping"); return }
         try? fm.removeItem(atPath: lidMarkerPath)
-        lidWatchdog.stop()
+        updateWatchdog()
         lidActive = false
         lidState.lastClaudeBusy = .distantPast   // don't let the linger flip it back on mid-sleep
         logLine("lid-closed mode OFF (sleeping)")
@@ -419,7 +430,7 @@ extension AppController {
     func lidStatusText() -> String? {
         guard lidActive else { return nil }
         if !fm.fileExists(atPath: lidMarkerPath) { return "Sleep is disabled (pmset disablesleep, not by Ephedrine)" }
-        if let s = lidState.session { return "Lid can be closed, awake \(lidSessionText(s, now: Date()))" }
+        if lidState.session != nil { return "The lid can be shut" }
         return "Lid can be closed while Claude works"
     }
 
@@ -460,7 +471,7 @@ extension AppController {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.lidApplying = false
-                if !sleepIsDisabled() { try? fm.removeItem(atPath: lidMarkerPath); self.lidWatchdog.stop() }
+                if !sleepIsDisabled() { try? fm.removeItem(atPath: lidMarkerPath); self.updateWatchdog() }
                 self.lidSetupOK = lidSetupInstalled()
                 logLine(err.map { "lid-closed setup removal failed: \($0)" } ?? "lid-closed setup removed")
                 self.evaluate()

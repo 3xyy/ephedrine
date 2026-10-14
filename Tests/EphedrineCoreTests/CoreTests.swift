@@ -548,9 +548,19 @@ private func lidIn(whileClaude: Bool = false, busy: Bool = false, closed: Bool =
 
 @Test func lidBatteryGuardOffOrOnAC() {
     var s = LidState(session: .indefinite)
-    #expect(stepLid(&s, lidIn(battery: 5, floor: 0)).disableSleep)                  // guard off
+    #expect(stepLid(&s, lidIn(battery: 15, floor: 0)).disableSleep)                 // an old "No limit" is 10%
     #expect(stepLid(&s, lidIn(battery: 5, onBattery: false)).disableSleep)          // on the adapter
     #expect(stepLid(&s, lidIn(battery: nil)).disableSleep)                           // no battery (desktop)
+}
+
+@Test func lidNeverRunsTheBatteryFlat() {
+    // "No limit" used to keep lid mode on all the way down; the battery limit
+    // is at least 10% now, whatever was saved.
+    #expect(lidGuard(lidIn(battery: 10, floor: 0)) == .lowBattery)
+    #expect(lidGuard(lidIn(battery: 5, floor: 0)) == .lowBattery)
+    #expect(lidGuard(lidIn(battery: 11, floor: 0)) == nil)
+    var s = LidState(session: .indefinite)
+    #expect(!stepLid(&s, lidIn(battery: 5, floor: 0)).disableSleep)
 }
 
 @Test func lidOnlyWhenPluggedIn() {
@@ -719,12 +729,15 @@ private func stuck(_ w: inout LidSleepWatch, at t: TimeInterval, closed: Bool = 
 
 // ── Battery floor for everything ──
 
-@Test func awakeFloorFollowsTheLidChoice() {
-    #expect(awakeBatteryFloor(lidFloor: 20) == 20)
-    #expect(awakeBatteryFloor(lidFloor: 30) == 30)
-    #expect(awakeBatteryFloor(lidFloor: 10) == 10)
-    #expect(awakeBatteryFloor(lidFloor: 0) == 10)                  // "No limit" still never runs it flat
-    #expect(awakeBatteryFloor(lidFloor: lidOnlyPluggedIn) == 30)   // the most careful choice
+@Test func awakeFloorIsTheBatterySetting() {
+    #expect(awakeBatteryFloor(20) == 20)
+    #expect(awakeBatteryFloor(30) == 30)
+    #expect(awakeBatteryFloor(10) == 10)
+    #expect(awakeBatteryFloor(0) == 10)                                  // an old "No limit": never runs it flat
+    #expect(awakeBatteryFloor(lidOnlyPluggedIn) == lidOnlyPluggedIn)     // only on the charger: never on battery
+    var b = BatteryStop()
+    let stopped = b.step(onBattery: true, percent: 95, floor: awakeBatteryFloor(lidOnlyPluggedIn))
+    #expect(stopped)
 }
 
 @Test func batteryStopLatchesUntilPluggedIn() {
@@ -748,9 +761,9 @@ private func stuck(_ w: inout LidSleepWatch, at t: TimeInterval, closed: Bool = 
 // ── Remote Control check-ins ──
 
 private func ci(enabled: Bool = true, closed: Bool = true, awake: Bool = false, sleepStarting: Bool = false,
-                external: Bool = false, guarded: Bool = false, at t: TimeInterval) -> CheckInInputs {
+                external: Bool = false, guarded: Bool = false, onBattery: Bool = false, at t: TimeInterval) -> CheckInInputs {
     CheckInInputs(enabled: enabled, lidClosed: closed, fullyAwake: awake, sleepStarting: sleepStarting,
-                  externalDisplay: external, guarded: guarded, now: Date(timeIntervalSince1970: t))
+                  externalDisplay: external, guarded: guarded, onBattery: onBattery, now: Date(timeIntervalSince1970: t))
 }
 
 /// A check-in whose lid closed at t=0 (the clock starts on the first closed step).
@@ -805,6 +818,17 @@ private func napping() -> RemoteCheckIn {
     #expect(c.step(ci(at: 600 + RemoteCheckIn.fullWakeTimeout)) == .ended(.noFullWake))
     #expect(c.step(ci(at: 600 + RemoteCheckIn.spacing - 1)) == nil)
     #expect(c.step(ci(at: 600 + RemoteCheckIn.spacing)) == .started)
+}
+
+@Test func checkInsAreRarerOnBattery() {
+    // Two minutes awake in every five drained the battery; on battery wait 15.
+    var c = RemoteCheckIn()
+    _ = c.step(ci(awake: true, onBattery: true, at: 0))
+    #expect(c.step(ci(onBattery: true, at: 600)) == .started)
+    #expect(c.step(ci(onBattery: true, at: 600 + RemoteCheckIn.fullWakeTimeout)) == .ended(.noFullWake))
+    #expect(c.step(ci(onBattery: true, at: 600 + RemoteCheckIn.spacing)) == nil)
+    #expect(c.step(ci(onBattery: true, at: 600 + RemoteCheckIn.spacingOnBattery - 1)) == nil)
+    #expect(c.step(ci(onBattery: true, at: 600 + RemoteCheckIn.spacingOnBattery)) == .started)
 }
 
 @Test func checkInEndsWhenTheLidOpensOrItsTurnedOff() {
@@ -902,7 +926,7 @@ private func freshDefaults() -> UserDefaults {
     #expect(s.enabled && s.finishMode == .sleepIfIdle && s.gracePeriod == 120 && s.graceUseSystem)
     #expect(s.powerMode == .always && s.detectors.isEmpty && s.usageAlert == 80 && !s.allowDisplaySleep)
     #expect(s.autoContinueMode == .off && !s.autoResumeLimit && !s.keepAwakeClaudeWorking)
-    #expect(s.lidWhileClaude && s.lidBatteryFloor == 20 && s.lidPauseApps && s.awayKeepRunning.isEmpty)
+    #expect(s.lidWhileClaude && s.batteryFloor == 20 && s.lidPauseApps && s.awayKeepRunning.isEmpty)
 }
 
 // Review focus 1: values saved by the pre-window app (raw keys) must load.
@@ -920,8 +944,15 @@ private func freshDefaults() -> UserDefaults {
     #expect(!s.enabled && s.finishMode == .alwaysSleep && s.gracePeriod == 30 && !s.graceUseSystem)
     #expect(s.powerMode == .acOnly && s.detectors == ["ssh", "terminal"] && s.usageAlert == 90 && s.allowDisplaySleep)
     #expect(s.autoContinueMode == .persistent && s.autoResumeLimit && s.keepAwakeClaudeWorking)
-    #expect(!s.lidWhileClaude && s.lidBatteryFloor == 10 && !s.lidPauseApps)
+    #expect(!s.lidWhileClaude && s.batteryFloor == 10 && !s.lidPauseApps)
     #expect(s.awayKeepRunning == ["com.spotify.client"])
+}
+
+@Test func settingsNoBatteryLimitMigratesTo10() {
+    let d = freshDefaults()
+    d.set(0, forKey: "lidBatteryFloor")
+    #expect(AppSettings(defaults: d).batteryFloor == 10)
+    #expect(d.integer(forKey: "lidBatteryFloor") == 10)
 }
 
 @Test func settingsLegacyAutoContinueMigrates() {
@@ -937,10 +968,10 @@ private func freshDefaults() -> UserDefaults {
     a.onChange = { changed.append($0) }
     a.finishMode = .stayNormal
     a.detectors.insert("monitor")
-    a.lidBatteryFloor = 30
+    a.batteryFloor = 30
     #expect(changed == ["finishMode", "detectors", "lidBatteryFloor"])
     let b = AppSettings(defaults: d)
-    #expect(b.finishMode == .stayNormal && b.detectors == ["monitor"] && b.lidBatteryFloor == 30)
+    #expect(b.finishMode == .stayNormal && b.detectors == ["monitor"] && b.batteryFloor == 30)
 }
 
 // Review focus 5
@@ -1087,6 +1118,39 @@ private func freshDefaults() -> UserDefaults {
     #expect(!away.isBack(now: t0 + 25_693.5, idleSeconds: 25_448.5))
     #expect(!away.isBack(now: t0 + 3600, idleSeconds: 60))
     #expect(away.isBack(now: t0 + 3600, idleSeconds: 0.4))
+}
+
+@Test func leavingSleepsOnceNothingNeedsTheMac() {
+    // "I'm leaving" used to hold the Mac awake until you came back, all night
+    // on 2026-10-09 and 2026-10-13. Now it sleeps a minute after Claude is done.
+    var a = AwaySleep()
+    let t0 = Date(timeIntervalSince1970: 1_000_000)
+    func step(_ t: TimeInterval, away: Bool = true, needed: Bool = false, awake: Bool = true) -> Bool {
+        a.step(away: away, needed: needed, fullyAwake: awake, now: t0 + t)
+    }
+    #expect(!step(0, needed: true))                 // Claude working
+    #expect(!step(10))                              // done: the quiet minute starts
+    #expect(!step(10 + AwaySleep.quiet - 1))
+    #expect(step(10 + AwaySleep.quiet))             // sleep now
+    #expect(!step(10 + AwaySleep.quiet + 3))        // woke right after: starts over, no instant re-sleep
+}
+
+@Test func leavingWaitsOutGapsAndNaps() {
+    var a = AwaySleep()
+    let t0 = Date(timeIntervalSince1970: 1_000_000)
+    func step(_ t: TimeInterval, away: Bool = true, needed: Bool = false, awake: Bool = true) -> Bool {
+        a.step(away: away, needed: needed, fullyAwake: awake, now: t0 + t)
+    }
+    #expect(!step(0))
+    #expect(!step(50, needed: true))                // Claude picked up again between turns
+    #expect(!step(60))
+    #expect(!step(60 + AwaySleep.quiet - 1))
+    #expect(step(60 + AwaySleep.quiet))
+    a = AwaySleep()
+    #expect(!step(0, awake: false))                 // in a nap: nothing
+    #expect(!step(600, awake: false))
+    #expect(!step(700, away: false))                // not away
+    #expect(!step(800, away: false))
 }
 
 @Test func leavingRightAfterComingBackIsIgnored() {

@@ -7,50 +7,35 @@ import EphedrineCore
 struct NowPane: View {
     let controller: AppController
     let now: Date
-    @State private var untilTime = Date().addingTimeInterval(8 * 3600)
 
     enum Stay: Hashable { case off, indefinite, running, minutes(Int) }
-    enum Lid: Hashable { case off, untilOpen, hours(Int), indefinite, running }
 
     var body: some View {
         Section {
                 Label(controller.statusText(), systemImage: "info.circle")
+                if let next = controller.nextText() { Label(next, systemImage: "arrow.forward.circle") }
                 if let lid = controller.lidStatusText() { Label(lid, systemImage: "laptopcomputer") }
+                if let battery = controller.batteryText() { Label(battery, systemImage: "battery.50") }
+            }
+        Section {
+                Button(controller.awayMode ? "I'm back, restore my apps" : "I'm leaving") { controller.toggleAway() }
+                Tip("Pauses other apps and blacks out the screen. Claude keeps working, then the Mac sleeps a minute after it's done. Move the mouse or type to restore everything.")
             }
         Section("Stay awake") {
                 Picker("Stay awake", selection: Binding(get: { stayChoice }, set: setStay)) {
                     Text("Off").tag(Stay.off)
-                    Text("Until I turn it off").tag(Stay.indefinite)
                     Text("For 30 minutes").tag(Stay.minutes(30))
                     Text("For 1 hour").tag(Stay.minutes(60))
                     Text("For 2 hours").tag(Stay.minutes(120))
+                    Text("Until I turn it off").tag(Stay.indefinite)
                     if let until = controller.keepAwakeUntil {
                         Text("\(fmtDuration(Int(until.timeIntervalSinceNow))) left").tag(Stay.running)
                     }
                 }
-                Tip("Keeps the Mac and the screen awake no matter what, say for a long chat in the browser or the Claude app.")
-            }
-        if controller.lidSetupOK {
-                Section("Stay awake with the lid closed") {
-                    Picker("Lid closed", selection: Binding(get: { lidChoice }, set: setLid)) {
-                        Text("Off").tag(Lid.off)
-                        Text("Until I open the lid").tag(Lid.untilOpen)
-                        ForEach([1, 2, 4, 8], id: \.self) { h in Text(h == 1 ? "For 1 hour" : "For \(h) hours").tag(Lid.hours(h)) }
-                        Text("Until I turn it off").tag(Lid.indefinite)
-                        if case .until(let d)? = controller.lidState.session {
-                            Text("Until \(clockStr(d)), \(fmtDuration(Int(d.timeIntervalSinceNow))) left").tag(Lid.running)
-                        }
-                    }
-                    HStack {
-                        DatePicker("Until a time", selection: $untilTime, displayedComponents: .hourAndMinute)
-                        Button("Start") { controller.startLid(.until(nextOccurrence(ofTimeIn: untilTime, after: Date()))) }
-                    }
-                    Tip("“Until I open the lid” turns itself off when you next open it, so the next close sleeps as usual.")
-                }
+                Tip("Keeps the Mac and the screen awake no matter what, say for a long chat in the browser or the Claude app."
+                    + (controller.lidSetupOK ? " The lid can be shut too." : ""))
             }
         Section {
-                Button(controller.awayMode ? "I'm back, restore my apps" : "I'm leaving: pause apps and dim the screen") { controller.toggleAway() }
-                Tip("Pauses other apps and turns the screen black, but keeps the Mac awake so Claude keeps working. Move the mouse or type to restore everything.")
                 Button("Claude is done, stop waiting for it") { controller.resetIdle() }
                 Tip("Use after cancelling Claude with Ctrl-C (which sends no signal), so the Mac doesn't stay awake waiting for it.")
         }
@@ -64,23 +49,6 @@ struct NowPane: View {
         case .off: controller.stopStayAwake()
         case .indefinite: controller.stayAwakeIndefinitely()
         case .minutes(let m): controller.stayAwake(minutes: m)
-        case .running: break
-        }
-    }
-    private var lidChoice: Lid {
-        switch controller.lidState.session {
-        case nil: return .off
-        case .untilLidOpens?: return .untilOpen
-        case .indefinite?: return .indefinite
-        case .until?: return .running
-        }
-    }
-    private func setLid(_ c: Lid) {
-        switch c {
-        case .off: controller.stopLidSession()
-        case .untilOpen: controller.startLid(.untilLidOpens)
-        case .hours(let h): controller.startLid(.until(Date().addingTimeInterval(TimeInterval(h * 3600))))
-        case .indefinite: controller.startLid(.indefinite)
         case .running: break
         }
     }
@@ -119,11 +87,6 @@ struct LidPane: View {
                     }
                 }
                 Section("Sleep anyway, even mid-task") {
-                    Picker("On battery", selection: $settings.lidBatteryFloor) {
-                        Text("Only when plugged in").tag(lidOnlyPluggedIn)
-                        ForEach(lidBatteryFloors.reversed(), id: \.self) { Text($0 == 0 ? "No limit" : "Stop at \($0)%").tag($0) }
-                    }
-                    Tip("The battery limit also covers everything else Ephedrine keeps awake for (“I'm leaving”, Stay awake, Claude, usage-limit waits), at 10% to 30%, until you plug in.")
                     Picker("Too hot at", selection: $settings.lidHeatLimit) {
                         Text("Warm").tag(LidHeatLimit.warm)
                         Text("Hot").tag(LidHeatLimit.hot)
@@ -134,7 +97,7 @@ struct LidPane: View {
                         Text("No limit").tag(0)
                         ForEach([1, 2, 4, 8, 12], id: \.self) { Text($0 == 1 ? "1 hour" : "\($0) hours").tag($0) }
                     }
-                    Tip("A backstop in case Claude looks busy for ages, say a stuck session. Lid sessions you start yourself run as chosen. When any of these hits with the lid shut, the Mac goes to sleep.")
+                    Tip("A backstop in case Claude looks busy for ages, say a stuck session. Stay awake runs as chosen. When either of these hits with the lid shut, the Mac goes to sleep. The battery limit is under Sleep and covers the lid too.")
                 }
                 Section {
                     Button("Remove lid-closed setup…") { controller.removeLidSetup() }

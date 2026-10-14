@@ -15,12 +15,14 @@ I wanted to start a long Claude Code task, close the lid, and come back to finis
 
 ## What it does
 
-- Keeps the Mac awake while any Claude Code session is busy, subagents and long tool calls included. When the last one finishes, it waits until you've been idle for your display-sleep time, shows a 10 second warning you can cancel, and sleeps the Mac. On battery it stops keeping the Mac awake at 20% (the lid-closed battery setting, kept between 10% and 30%) until you plug in, so it never runs the battery flat.
+- Keeps the Mac awake while any Claude Code session is busy, subagents and long tool calls included. When the last one finishes, it waits until you've been idle for your display-sleep time, shows a 10 second warning you can cancel, and sleeps the Mac. On battery it stops keeping the Mac awake for anything at 30, 20 or 10% (you pick, or only on the charger) until you plug in, so it never runs the battery flat.
 - Lid-closed mode (optional): close the lid and Claude keeps going. A minute after it finishes, the Mac sleeps. The screen locks as the lid closes, and other apps can be paused until you open it. It sleeps anyway if the battery runs low, the Mac gets too hot, or the lid has been shut longer than you allow.
 - Remote Control check-ins (optional, off by default): with the lid shut and the Mac asleep, macOS still wakes it for a few seconds every 10 to 20 minutes. Ephedrine turns those into a full wake for 2 minutes, so `claude remote-control` can pick up a message you sent from your phone. If Claude starts working, the Mac stays awake until it's done, then goes back to sleep.
 - Terminal helpers (optional, Terminal.app): types `continue` when a session stops on an API error, waits out a usage limit that resets within 6 hours and resumes after it, and notices Claude working on screen when no hook fires.
 - Shows your Claude session and weekly limits in the menu, with an alert at a level you pick.
-- "I'm leaving" (in the menu bar menu) pauses other apps and blacks out the screen while Claude works, letting the display sleep as usual. Move the mouse and everything comes back.
+- "I'm leaving" (in the menu bar menu) pauses other apps and blacks out the screen while Claude works, then sleeps the Mac a minute after Claude is done. Move the mouse and everything comes back.
+- "Stay awake" (menu bar menu or Settings) keeps the Mac awake for 30 minutes, 1 or 2 hours, or until you turn it off. With lid-closed mode set up, the lid can be shut too.
+- The menu says what's keeping the Mac awake, what happens next, and the battery limit while you're on battery.
 
 ## Install
 
@@ -70,10 +72,10 @@ Open them with ⌘, from the menu.
 
 | Pane | What's there |
 |---|---|
-| Now | Stay awake for a while, start a lid-closed session, "I'm leaving", and clearing a stuck "working" state after Ctrl-C |
+| Now | What's keeping the Mac awake and what happens next, "I'm leaving", Stay awake, and clearing a stuck "working" state after Ctrl-C |
 | General | The on/off switch, extra things to stay awake for (a running Terminal command, `top` or `tail -f`, SSH, downloads, Claude busy in Terminal), Open at login, and the menu bar icon's colors (match the menu bar, an orange spark, or colored by state) |
-| Sleep | What happens when Claude finishes (sleep once you're away, always sleep, or nothing), how long to wait, and battery or adapter only |
-| Lid closed | Lid-closed mode, Remote Control check-ins, the screen lock, pausing apps, and when to sleep anyway: battery (only when plugged in, or stop at 30, 20 or 10%), heat, and how long the lid can stay shut |
+| Sleep | What happens when Claude finishes (sleep once you're away, always sleep, or nothing), how long to wait, battery or adapter only, and the battery limit for everything (down to 30, 20 or 10%, or only on the charger) |
+| Lid closed | Lid-closed mode, Remote Control check-ins, the screen lock, pausing apps, and when to sleep anyway: heat, and how long the lid can stay shut |
 | Claude Code | Retry after API errors, continue after a usage limit resets, usage alerts |
 | Away | Apps "I'm leaving" never pauses. Terminals, code editors, browsers, Xcode, Simulator and call apps are already on it |
 
