@@ -17,8 +17,6 @@ let leaseFallback: TimeInterval = 300   // used only if a marker file can't be p
 let tickInterval: TimeInterval = 3
 let preSleepWarning: TimeInterval = 10  // grace given after the notification before sleeping
 let usageRefresh: TimeInterval = 180    // how often to refetch Claude usage
-let limitWaitCap: TimeInterval = 6 * 3600   // only wait out usage limits resetting within this (session limits are ≤5h)
-let limitWaitGrace: TimeInterval = 5 * 60   // stay awake this long past a reset so the resume can land
 
 // ───────────────────────────── Controller ─────────────────────────────
 
@@ -34,7 +32,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
     var manualKeepAwake = false
     var claudeWorkingCached = false
-    var limitWaitPending = false                    // stay awake until a usage limit resets
+    var limitResumeAts: [Date] = []                 // scheduled usage-limit resumes (from the terminal scan)
+    /// A usage-limit wait is keeping the Mac awake (on battery only within an hour of the reset).
+    var limitWaitPending: Bool { limitWaitHolds(resumeAts: limitResumeAts, now: Date(), onBattery: !onACPower()) }
     var retryPending = false                        // an auto-continue retry is scheduled
 
     // lid-closed mode (LidMode.swift)
@@ -109,6 +109,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     // transient state
     var wasBlocked = false
     var extraActiveCached = false
+    var extraActiveHolding = false                  // a detector is active and still within its hour on battery
+    var detectorCap = DetectorBatteryCap()
+    var detectorCapLogged = false
     var detectorScanInFlight = false
     var armed = false
     var awayMode = false
@@ -300,7 +303,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             // result of the previous scan (≤1 tick stale; the lease-based
             // logic has minutes of slack). Not rescanned in a nap: a command
             // seen for one nap flipped "work finished" and the countdown.
-            extraActive = extraActiveCached
+            extraActive = detectorCap.allows(active: extraActiveCached, onBattery: !onACPower(), now: Date())
+            if extraActiveCached && !extraActive && !detectorCapLogged {
+                detectorCapLogged = true
+                logLine("on battery: \(extraActiveLabel ?? "a background task") kept the Mac awake for an hour, letting it sleep")
+            }
+            if extraActive || !extraActiveCached { detectorCapLogged = false }
             if !detectorScanInFlight && fullyAwake {
                 detectorScanInFlight = true
                 let keys = settings.detectors
@@ -317,7 +325,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         } else {
             extraActiveCached = false
             extraActiveLabel = nil
+            _ = detectorCap.allows(active: false, onBattery: false, now: Date())   // a fresh hour next time
         }
+        extraActiveHolding = extraActive
         let claudeWorkingNow = settings.keepAwakeClaudeWorking && claudeWorkingCached
         let limitWaitNow = settings.autoResumeLimit && limitWaitPending
         let blocked = busy || extraActive || claudeWorkingNow || limitWaitNow
@@ -481,8 +491,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
         // Stay awake only for a scheduled wait, never just because limit text
         // is on screen. Stale text would otherwise hold the Mac awake for days.
-        let pending = limitEpisodes.values.contains { ep in ep.resumeAt.map { now < $0 + limitWaitGrace } ?? false }
-        DispatchQueue.main.async { [weak self] in self?.limitWaitPending = pending }
+        let resumeAts = limitEpisodes.values.compactMap(\.resumeAt)
+        DispatchQueue.main.async { [weak self] in self?.limitResumeAts = resumeAts }
     }
 
     /// Runs on continueQueue. A usage-limit wall is on this tab: answer Claude
@@ -520,7 +530,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             logLine("usage limit on \(tty): resets \(clockStr(reset)), too far off to keep the Mac awake for"); return
         }
         ep.resumeAt = reset.addingTimeInterval(60)
-        logLine("usage limit on \(tty): resets \(clockStr(reset)), staying awake; "
+        logLine("usage limit on \(tty): resets \(clockStr(reset)), "
+                + (onACPower() ? "staying awake; " : "on battery, so awake only for the last hour; ")
                 + (ep.claudeResumes ? "Claude Code will continue by itself" : "will type continue at \(clockStr(ep.resumeAt))"))
     }
 
@@ -888,8 +899,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         if n > 0 { return "Awake, Claude is working" + (n > 1 ? " (\(n) sessions)" : "") }
         if settings.keepAwakeClaudeWorking && claudeWorkingCached { return "Awake, Claude is busy in Terminal" }
         if settings.autoResumeLimit && limitWaitPending { return "Awake until a usage limit resets" }
-        if extraActiveCached, let l = extraActiveLabel { return "Awake: " + l.prefix(1).lowercased() + l.dropFirst() }
-        if extraActiveCached { return "Awake, a background task is running" }
+        if settings.autoResumeLimit, let at = limitResumeAts.filter({ $0 > Date() }).min(), !onACPower() {
+            return "Usage limit resets \(clockStr(at)); on battery the Mac can sleep instead of waiting"
+        }
+        if extraActiveHolding, let l = extraActiveLabel { return "Awake: " + l.prefix(1).lowercased() + l.dropFirst() }
+        if extraActiveHolding { return "Awake, a background task is running" }
         if armed && settings.finishMode != .stayNormal && autoSleepAllowed() {
             if let at = pendingSleepAt { return "Sleeping in \(max(0, Int(at.timeIntervalSinceNow)))s…" }
             return "Idle, sleeping in \(fmtCountdown(graceRemaining()))"

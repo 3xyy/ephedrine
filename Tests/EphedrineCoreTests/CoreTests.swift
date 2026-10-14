@@ -758,6 +758,40 @@ private func stuck(_ w: inout LidSleepWatch, at t: TimeInterval, closed: Bool = 
     #expect(!b.stopped)
 }
 
+@Test func limitWaitOnBatteryOnlyWhenTheResetIsClose() {
+    // 2026-10-13: a 4h40m wait for a usage limit held the Mac awake on battery
+    // from 80% to the battery limit. On battery, only waits up to an hour count.
+    let now = Date(timeIntervalSince1970: 1_000_000)
+    let soon = now + 40 * 60, late = now + 3 * 3600
+    #expect(limitWaitHolds(resumeAts: [soon], now: now, onBattery: true))
+    #expect(!limitWaitHolds(resumeAts: [late], now: now, onBattery: true))
+    #expect(limitWaitHolds(resumeAts: [late], now: now, onBattery: false))           // on the charger: the whole wait
+    #expect(limitWaitHolds(resumeAts: [late], now: late - 30 * 60, onBattery: true))  // an hour out, it holds again
+    #expect(limitWaitHolds(resumeAts: [soon], now: soon + limitWaitGrace - 1, onBattery: true))   // lets the resume land
+    #expect(!limitWaitHolds(resumeAts: [soon], now: soon + limitWaitGrace, onBattery: false))
+    #expect(limitWaitHolds(resumeAts: [late, soon], now: now, onBattery: true))       // any close one
+    #expect(!limitWaitHolds(resumeAts: [], now: now, onBattery: false))
+}
+
+@Test func detectorsGetAnHourOnBattery() {
+    // 2026-10-09: a detector held the Mac awake for 12.6 hours.
+    var cap = DetectorBatteryCap()
+    let t0 = Date(timeIntervalSince1970: 1_000_000)
+    func allows(_ t: TimeInterval, active: Bool = true, onBattery: Bool = true) -> Bool {
+        cap.allows(active: active, onBattery: onBattery, now: t0 + t)
+    }
+    #expect(allows(0, onBattery: false))
+    #expect(allows(5 * 3600, onBattery: false))                 // on the charger: no limit
+    #expect(allows(5 * 3600 + 1))                                // unplugged: the hour starts
+    #expect(allows(5 * 3600 + DetectorBatteryCap.limit))
+    #expect(!allows(5 * 3600 + 1 + DetectorBatteryCap.limit))   // an hour on battery: let it sleep
+    #expect(!allows(6 * 3600 + 100, active: false))              // activity stopped
+    #expect(allows(6 * 3600 + 200))                              // new activity: a fresh hour
+    #expect(allows(6 * 3600 + 300, onBattery: false))
+    #expect(allows(6 * 3600 + 301))                              // plugged in and out: a fresh hour
+    #expect(allows(6 * 3600 + 301 + DetectorBatteryCap.limit - 1))
+}
+
 // ── Remote Control check-ins ──
 
 private func ci(enabled: Bool = true, closed: Bool = true, awake: Bool = false, sleepStarting: Bool = false,

@@ -333,3 +333,38 @@ public final class SerialSwitch {
     @discardableResult
     public func setSync(_ on: Bool) -> Bool { queue.sync { apply(on) } }
 }
+
+// ── Background reasons on battery ──
+
+/// Only wait out usage limits resetting within this (session limits are ≤5h).
+public let limitWaitCap: TimeInterval = 6 * 3600
+/// Stay awake this long past a reset so the resume can land.
+public let limitWaitGrace: TimeInterval = 5 * 60
+/// On battery, a usage-limit wait keeps the Mac awake only this close to the reset.
+public let limitWaitOnBattery: TimeInterval = 3600
+
+/// Whether scheduled usage-limit resumes (reset + 1 min each) keep the Mac
+/// awake now. On 2026-10-13 a 4h40m wait held it awake on battery from 80%
+/// down to the battery limit; on battery only a reset within the hour counts.
+public func limitWaitHolds(resumeAts: [Date], now: Date, onBattery: Bool) -> Bool {
+    resumeAts.contains { at in
+        now < at + limitWaitGrace && (!onBattery || at.timeIntervalSince(now) <= limitWaitOnBattery)
+    }
+}
+
+/// "Also keep awake while…" detectors have no end of their own (a dev server
+/// runs all day; one held the Mac awake 12.6 hours on 2026-10-09). On battery
+/// they get an hour, then the Mac may sleep. The activity stopping or the
+/// charger coming and going starts the hour over.
+public struct DetectorBatteryCap {
+    public static let limit: TimeInterval = 3600
+    private var since: Date?
+    public init() {}
+
+    public mutating func allows(active: Bool, onBattery: Bool, now: Date) -> Bool {
+        guard active, onBattery else { since = nil; return active }
+        let s = since ?? now
+        since = s
+        return now.timeIntervalSince(s) < Self.limit
+    }
+}

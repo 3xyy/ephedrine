@@ -145,6 +145,7 @@ struct GeneralPane: View {
                 Text("Claude Code is busy in Terminal")
                 Tip("Reads Terminal.app's screen, so it also catches background workflows the hooks can't see.")
             }
+            Tip("On battery, the ones above keep the Mac awake for an hour at most, so a server left running can't hold it all night.")
         }
         Section {
             Toggle(isOn: $settings.allowDisplaySleep) {
@@ -213,7 +214,7 @@ struct SleepPane: View {
                 ForEach([30, 20, 10], id: \.self) { Text("Down to \($0)%").tag($0) }
                 Text("Only on the charger").tag(lidOnlyPluggedIn)
             }
-            Tip("Covers everything Ephedrine keeps awake for: Claude, “I'm leaving”, Stay awake and the lid. At the limit it lets the Mac sleep until you plug it in, so the battery never runs flat.")
+            Tip("Covers everything Ephedrine keeps awake for: Claude, “I'm leaving”, Stay awake and the lid. At the limit it lets the Mac sleep until you plug it in, so the battery never runs flat. Above it, usage-limit waits and “Also keep awake while…” get an hour at most on battery.")
         }
     }
 }
@@ -233,7 +234,7 @@ struct ClaudePane: View {
         Section {
             Toggle(isOn: $settings.autoResumeLimit) {
                 Text("Continue after a usage limit resets")
-                Tip("When Claude Code hits a limit that resets within 6 hours: choose its “wait” option (never upgrade or paid credits), keep the Mac awake, and continue once it resets. Weekly waits are left alone.")
+                Tip("When Claude Code hits a limit that resets within 6 hours: choose its “wait” option (never upgrade or paid credits), keep the Mac awake, and continue once it resets. On battery it only stays awake for the last hour before the reset. Weekly waits are left alone.")
             }
         }
         Section {
