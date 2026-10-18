@@ -61,6 +61,9 @@ public final class AppSettings: ObservableObject {
     /// An outage at least this long (seconds) triggers the tmux nudge when the network returns.
     @Published public var outageNudgeSeconds: Double { didSet { save(outageNudgeSeconds, "outageNudgeSeconds") } }
 
+    /// Name of the iPhone hotspot to join when Wi-Fi drops while Ephedrine holds the Mac awake; "" = none. The password lives in the keychain.
+    @Published public var hotspotSSID: String { didSet { save(hotspotSSID, "hotspotSSID") } }
+
     public init(defaults: UserDefaults) {
         self.defaults = defaults
         func bool(_ k: String, _ d: Bool) -> Bool { defaults.object(forKey: k) as? Bool ?? d }
@@ -104,6 +107,7 @@ public final class AppSettings: ObservableObject {
         tmuxTargets = (defaults.stringArray(forKey: "tmuxTargets") ?? []).filter { seenTmux.insert($0).inserted }
         tmuxPressEnter = bool("tmuxPressEnter", false)
         outageNudgeSeconds = defaults.object(forKey: "outageNudgeSeconds") as? Double ?? 90
+        hotspotSSID = defaults.string(forKey: "hotspotSSID") ?? ""
     }
 
     public func addKeepRunning(_ bundleID: String) {

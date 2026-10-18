@@ -59,6 +59,7 @@ struct NowPane: View {
 struct LidPane: View {
     @ObservedObject var settings: AppSettings
     let controller: AppController
+    @ObservedObject var ui: SettingsUI
     let now: Date   // re-renders each second, so setup finishing shows up
 
     var body: some View {
@@ -117,6 +118,27 @@ struct LidPane: View {
                         Tip("Adds Low Power Mode to what Ephedrine may switch. Asks for your password once.")
                     }
                 }
+                Section("iPhone hotspot") {
+                    LabeledContent("Status", value: controller.hotspotStatus)
+                    TextField("Network name", text: $ui.hotspotSSID)
+                    HStack {
+                        SecureField("Password", text: $ui.hotspotPassword)
+                            .onSubmit(saveHotspot)
+                        Button("Save", action: saveHotspot)
+                    }
+                    Tip("While Ephedrine is keeping the Mac awake and Wi-Fi has been down for 5 seconds, the Mac tries to join this hotspot, again after 5, 10, 20 and then every 30 seconds. The password is kept in your keychain. Leave it empty to keep the saved one; saving an empty name removes the hotspot.")
+                    LabeledContent("Location", value: controller.locationStatus)
+                    if !controller.location.allowed {
+                        Button("Open Location Services") {
+                            if let url = URL(string: locationServicesURL) { NSWorkspace.shared.open(url) }
+                        }
+                    }
+                    Tip("macOS only shows apps Wi-Fi network names when Location is allowed. Ephedrine never reads your location. Set System Settings › Wi-Fi › Ask to join hotspots to Automatically.")
+                }
+                .task {   // on one section: on the Group it would run once per child
+                    if ui.hotspotSSID.isEmpty { ui.hotspotSSID = settings.hotspotSSID }
+                    controller.refreshHotspot()
+                }
                 Section("Sleep anyway, even mid-task") {
                     Picker("Too hot at", selection: $settings.lidHeatLimit) {
                         Text("Warm").tag(LidHeatLimit.warm)
@@ -135,6 +157,13 @@ struct LidPane: View {
                     Tip("Deletes \(lidSudoersPath). Asks for your password.")
                 }
         }
+    }
+}
+
+extension LidPane {
+    fileprivate func saveHotspot() {
+        controller.saveHotspot(ssid: ui.hotspotSSID, password: ui.hotspotPassword)
+        ui.hotspotPassword = ""
     }
 }
 

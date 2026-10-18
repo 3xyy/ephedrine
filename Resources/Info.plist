@@ -22,6 +22,10 @@
 	<string>14.4</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSLocationUsageDescription</key>
+	<string>Ephedrine reads Wi-Fi network names to find your iPhone hotspot when Wi-Fi drops. It never reads your location.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Ephedrine reads Wi-Fi network names to find your iPhone hotspot when Wi-Fi drops. It never reads your location.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Ephedrine reads your Terminal tabs to see whether Claude Code is working, and types “continue” when it stops on an error.</string>
 </dict>

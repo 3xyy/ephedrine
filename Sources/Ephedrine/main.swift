@@ -115,6 +115,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     let continueQueue = DispatchQueue(label: "ephedrine.autocontinue")
     let networkWatch = NetworkWatch()
     var outage = OutageTracker()           // main thread
+    // iPhone hotspot join (Hotspot.swift), main thread except the attempt itself, which runs on hotspotQueue
+    var hotspotGate = HotspotJoinGate()
+    let hotspotQueue = DispatchQueue(label: "ephedrine.hotspot")
+    let location = LocationAccess()
+    var hotspotJoining = false
+    var hotspotNotified = false            // the unreadable-password notification went out this outage
+    var hotspotNoted = false               // the "Location isn't allowed" line was logged this outage
+    var hotspotPassword = HotspotPasswordState.ok
     // browser throttle warning (BrowserRelaunch.swift), main thread except browserQueue's ps runs
     let browserQueue = DispatchQueue(label: "ephedrine.browsers")
     var throttledBrowsers: [ThrottledBrowser] = []
@@ -451,6 +459,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             if awake.apply(system: false, display: false) { logLine("keep-awake OFF") }
         }
         updateLowPower(holding: keepAwake, percent: charge)
+        hotspotTick(holding: keepAwake || lidShutHold(closed: lidIsClosed()))
 
         // "I'm leaving": sleep once Claude (not a detector) has been done for a
         // minute. It used to hold the Mac awake until you came back, which on
@@ -1231,6 +1240,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         if lowPowerOffFailures >= 2 && fm.fileExists(atPath: lowPowerMarkerPath) {
             out.append("Low Power Mode is stuck on. Re-run lid setup, or turn it off in System Settings, Battery.")
         }
+        if !hotspotName.isEmpty && hotspotPassword == .unreadable { out.append("Hotspot password needs re-entering in Settings") }
         out += browserWarnings()
         return out
     }

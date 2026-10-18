@@ -38,6 +38,8 @@ final class SettingsUI: ObservableObject {
     @Published var loginChanged = 0           // bumped after a toggle so it redraws right away
     @Published var notifications = "Checking…"
     @Published var cmuxPassword = ""          // typed in Claude Code › cmux, cleared once saved to the keychain
+    @Published var hotspotSSID = ""           // typed in Lid › iPhone hotspot, filled from the saved name when the pane opens
+    @Published var hotspotPassword = ""       // cleared once saved to the keychain
     @Published var tmuxTarget = ""            // typed in Claude Code › tmux panes, cleared once added
 }
 
@@ -69,6 +71,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         clock.stop()
         ui.cmuxPassword = ""   // a typed but unsaved password doesn't wait in memory for the next open
+        ui.hotspotPassword = ""
+        ui.hotspotSSID = ""    // reloaded from the saved name when Lid opens again
     }
 }
 
@@ -113,7 +117,7 @@ struct SettingsView: View {
         case .sleep: SleepPane(settings: settings, controller: controller)
         case .claude: ClaudePane(settings: settings, controller: controller, ui: ui, now: now)
         case .now: NowPane(controller: controller, now: now)
-        case .lid: LidPane(settings: settings, controller: controller, now: now)
+        case .lid: LidPane(settings: settings, controller: controller, ui: ui, now: now)
         case .away: AwayPane(settings: settings)
         case .about: AboutPane(settings: settings, controller: controller, ui: ui, now: now)
         }

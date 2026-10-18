@@ -26,42 +26,22 @@ func cmuxInstalled() -> Bool { NSWorkspace.shared.urlForApplication(withBundleId
 enum CmuxKeychain {
     static let service = "ephedrine-cmux"
     static let account = "socket"
-    private static var item: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: service,
-         kSecAttrAccount as String: account]
-    }
 
     /// Never shows a dialog: an item macOS would ask about is skipped.
     /// errSecItemNotFound is "none saved"; any other failure is `unreadable`.
     static func read() -> (password: String?, state: CmuxSavedPassword) {
-        var q = item
-        q[kSecReturnData as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitOne
-        q[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
-        var out: CFTypeRef?
-        let status = SecItemCopyMatching(q as CFDictionary, &out)
-        if status == errSecItemNotFound { return (nil, .none) }
-        guard status == errSecSuccess else { return (nil, .unreadable(status)) }
-        guard let data = out as? Data, let pw = String(data: data, encoding: .utf8), !pw.isEmpty else { return (nil, .none) }
-        return (pw, .saved)
+        switch Keychain.read(service: service, account: account) {
+        case .missing: return (nil, .none)
+        case .unreadable(let status): return (nil, .unreadable(status))
+        case .found(let pw): return pw.isEmpty ? (nil, .none) : (pw, .saved)
+        }
     }
 
     /// Save the password, or remove it when empty. Main thread only: updating
     /// an item can make macOS ask, and nothing may wait on that answer.
     static func save(_ password: String) -> OSStatus {
-        dispatchPrecondition(condition: .onQueue(.main))
-        guard !password.isEmpty else {
-            let s = SecItemDelete(item as CFDictionary)
-            return s == errSecItemNotFound ? errSecSuccess : s
-        }
-        let data = Data(password.utf8)
-        var add = item
-        add[kSecValueData as String] = data
-        add[kSecAttrLabel as String] = "Ephedrine cmux socket password"
-        let s = SecItemAdd(add as CFDictionary, nil)
-        guard s == errSecDuplicateItem else { return s }
-        return SecItemUpdate(item as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        guard !password.isEmpty else { return Keychain.delete(service: service, account: account) }
+        return Keychain.save(service: service, account: account, label: "Ephedrine cmux socket password", password: password)
     }
 }
 
