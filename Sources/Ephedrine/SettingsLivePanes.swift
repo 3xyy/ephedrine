@@ -108,6 +108,10 @@ struct LidPane: View {
                         Text("Low Power Mode while the lid is shut")
                         Tip("On battery, turns Low Power Mode on while the Mac stays awake with the lid shut, and off again when the lid opens. If you turned it on yourself, it stays on.")
                     }
+                    Toggle(isOn: $settings.browserThrottleWarning) {
+                        Text("Warn when a browser would slow down with the lid shut")
+                        Tip("Chrome, Edge, Brave, Arc, Comet and Chromium slow down hidden windows, which stalls Claude working in the browser. The menu then offers to relaunch the browser with two flags that stop that. It asks before quitting anything.")
+                    }
                     if controller.lowPowerSetupNeeded {
                         Button("Update lid setup…") { controller.setupLid() }
                         Tip("Adds Low Power Mode to what Ephedrine may switch. Asks for your password once.")

@@ -115,6 +115,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     let continueQueue = DispatchQueue(label: "ephedrine.autocontinue")
     let networkWatch = NetworkWatch()
     var outage = OutageTracker()           // main thread
+    // browser throttle warning (BrowserRelaunch.swift), main thread except browserQueue's ps runs
+    let browserQueue = DispatchQueue(label: "ephedrine.browsers")
+    var throttledBrowsers: [ThrottledBrowser] = []
+    var relaunchProblems: [String: String] = [:]   // bundle id → what went wrong
+    var browserScanning = false
+    var browserScanGeneration = 0                  // bumped to drop a scan that began before a change
+    var browserRelaunching = Set<String>()         // bundle ids with a relaunch in progress
 
     /// Settings snapshot handed to the background terminal scan, so the scan
     /// never reads main-thread-mutated properties across threads.
@@ -233,6 +240,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let t = Timer(timeInterval: tickInterval, repeats: true) { [weak self] _ in self?.evaluate() }
         RunLoop.main.add(t, forMode: .common)
         tick = t
+        let bt = Timer(timeInterval: 60, repeats: true) { [weak self] _ in self?.scanBrowsers() }
+        RunLoop.main.add(bt, forMode: .common)
+        scanBrowsers()
         logLine("Ephedrine started")
         networkWatch.onChange = { [weak self] ok in self?.networkChanged(ok) }
         networkWatch.start()
@@ -1220,6 +1230,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         if lowPowerOffFailures >= 2 && fm.fileExists(atPath: lowPowerMarkerPath) {
             out.append("Low Power Mode is stuck on. Re-run lid setup, or turn it off in System Settings, Battery.")
         }
+        out += browserWarnings()
         return out
     }
 
@@ -1229,6 +1240,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             menu.addItem(item("Re-run lid setup to allow Low Power Mode", #selector(setupLid),
                               tip: "Adds Low Power Mode to what Ephedrine may switch. Asks for your password once.", symbol: "arrow.clockwise"))
         }
+        addBrowserItems(to: menu)
     }
 
     /// Everything the status card shows. Watts and Wi-Fi are read here, when the menu opens, never on a timer.
@@ -1466,6 +1478,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             if !on { claudeWorkingCached = false }
             continueQueue.async { if on { _ = terminalTabsSnapshot() } }
             logLine("keep-awake-while-claude-works \(on ? "on" : "off")")
+        case "browserThrottleWarning":
+            if settings.browserThrottleWarning { scanBrowsers() } else { clearBrowserState() }
+            logLine("browser throttle warning \(settings.browserThrottleWarning ? "on" : "off")")
         case "lidRemoteCheckIn":
             updateCheckInActivity()
             logLine("Remote Control check-ins \(settings.lidRemoteCheckIn ? "on" : "off")")

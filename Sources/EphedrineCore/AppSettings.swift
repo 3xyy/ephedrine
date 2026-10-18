@@ -41,6 +41,8 @@ public final class AppSettings: ObservableObject {
     @Published public var lidKeyboardOff: Bool { didSet { save(lidKeyboardOff, "lidKeyboardOff") } }
     /// Pause Docker Desktop while the lid-shut hold lasts, when no container runs.
     @Published public var lidDockerRule: Bool { didSet { save(lidDockerRule, "lidDockerRule") } }
+    /// Warn in the menu when a running Chromium browser would slow down hidden windows with the lid shut.
+    @Published public var browserThrottleWarning: Bool { didSet { save(browserThrottleWarning, "browserThrottleWarning") } }
     /// Ask GitHub every few hours whether a newer version is out.
     @Published public var checkForUpdates: Bool { didSet { save(checkForUpdates, "checkForUpdates") } }
     /// The first-run setup screen was finished (or skipped).
@@ -86,6 +88,7 @@ public final class AppSettings: ObservableObject {
         lidMute = bool("lidMute", true)
         lidKeyboardOff = bool("lidKeyboardOff", true)
         lidDockerRule = bool("lidDockerRule", false)
+        browserThrottleWarning = bool("browserThrottleWarning", true)
         checkForUpdates = bool("checkForUpdates", true)
         setupDone = bool("setupDone", false)
         menuBarIconStyle = defaults.string(forKey: "menuBarIconStyle").flatMap(MenuBarIconStyle.init(rawValue:)) ?? .mono
