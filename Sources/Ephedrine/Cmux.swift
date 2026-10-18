@@ -71,50 +71,13 @@ struct CmuxRun { let status: Int32; let out: String; let err: String; let timedO
 /// than `timeout` for it (plus a second or two to stop it). A stalled cmux
 /// must not hold up the scan, which also serves Terminal.
 func runCmux(_ cli: String, _ args: [String], password: String, timeout: TimeInterval = 5) -> CmuxRun {
-    let p = Process()
-    p.executableURL = URL(fileURLWithPath: cli)
-    p.arguments = args
-    // Inherited CMUX_* variables could point it at another socket or a default
-    // surface; every call names its surface explicitly.
-    var env = ProcessInfo.processInfo.environment.filter { !$0.key.hasPrefix("CMUX_") }
-    env["CMUX_SOCKET_PASSWORD"] = password
-    p.environment = env
-    p.standardInput = FileHandle.nullDevice
-    let outPipe = Pipe(), errPipe = Pipe()
-    p.standardOutput = outPipe
-    p.standardError = errPipe
-    let exited = DispatchSemaphore(value: 0)
-    p.terminationHandler = { _ in exited.signal() }
-    do { try p.run() } catch {
-        return CmuxRun(status: cmuxLaunchFailed, out: "", err: "\(error)", timedOut: false, timeout: timeout)
-    }
-    // Drain both pipes while it runs, so a full pipe can't stall it.
-    let lock = NSLock()
-    var outData = Data(), errData = Data()
-    let reads = DispatchGroup()
-    DispatchQueue.global(qos: .utility).async(group: reads) {
-        let d = outPipe.fileHandleForReading.readDataToEndOfFile()
-        lock.lock(); outData = d; lock.unlock()
-    }
-    DispatchQueue.global(qos: .utility).async(group: reads) {
-        let d = errPipe.fileHandleForReading.readDataToEndOfFile()
-        lock.lock(); errData = d; lock.unlock()
-    }
-    var timedOut = false
-    if exited.wait(timeout: .now() + timeout) == .timedOut {
-        timedOut = true
-        p.terminate()
-        if exited.wait(timeout: .now() + 1) == .timedOut {
-            kill(p.processIdentifier, SIGKILL)
-            _ = exited.wait(timeout: .now() + 1)
-        }
-    }
-    _ = reads.wait(timeout: .now() + 1)
-    lock.lock(); defer { lock.unlock() }
-    return CmuxRun(status: timedOut ? -2 : p.terminationStatus,
-                   out: String(decoding: outData, as: UTF8.self),
-                   err: String(decoding: errData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines),
-                   timedOut: timedOut, timeout: timeout)
+    let r = runProcess(cli, args, tweakEnv: { env in
+        // Inherited CMUX_* variables could point it at another socket or a default
+        // surface; every call names its surface explicitly.
+        env = env.filter { !$0.key.hasPrefix("CMUX_") }
+        env["CMUX_SOCKET_PASSWORD"] = password
+    }, timeout: timeout)
+    return CmuxRun(status: r.launchFailed ? cmuxLaunchFailed : r.status, out: r.out, err: r.err, timedOut: r.timedOut, timeout: timeout)
 }
 
 /// Why a run didn't do its job, for the log (cmux's own error line).

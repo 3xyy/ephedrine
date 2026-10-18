@@ -15,6 +15,8 @@ import Testing
 @Test func heldLine() {
     #expect(StatusLines.held(paused: 0, dockerPaused: false, muted: false, lowPower: false, lastGap: nil) == nil)
     #expect(StatusLines.held(paused: 0, dockerPaused: false, muted: false, lowPower: false, lastGap: 0) == nil)
+    #expect(StatusLines.held(paused: 0, dockerPaused: false, muted: false, lowPower: false, lastGap: 12) == nil)
+    #expect(StatusLines.held(paused: 0, dockerPaused: false, muted: true, lowPower: false, lastGap: 12) == "muted · last network gap 12s")
     #expect(StatusLines.held(paused: 1, dockerPaused: false, muted: false, lowPower: false, lastGap: nil) == "1 app paused")
     #expect(StatusLines.held(paused: 3, dockerPaused: true, muted: true, lowPower: true, lastGap: 11.6)
             == "3 apps paused · Docker paused · muted · Low Power Mode on · last network gap 12s")

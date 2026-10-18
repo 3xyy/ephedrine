@@ -51,3 +51,28 @@ import Foundation
     s.tmuxTargets.removeAll()
     #expect(AppSettings(defaults: d).tmuxTargets.isEmpty)
 }
+
+@Test func markMustBeOneLine() {
+    #expect(!paneMarked(" \non")); #expect(!paneMarked("on\n \n")); #expect(paneMarked(" on \n"))
+}
+@Test func markCommandQuotesOddTargets() {
+    #expect(tmuxMarkCommand("%3") == "tmux set-option -p -t %3 @ephedrine-nudge on")
+    #expect(tmuxMarkCommand("my sess:1.0") == "tmux set-option -p -t 'my sess:1.0' @ephedrine-nudge on")
+    #expect(tmuxMarkCommand("a;b") == "tmux set-option -p -t 'a;b' @ephedrine-nudge on")
+    #expect(tmuxMarkCommand("it's") == "tmux set-option -p -t 'it'\\''s' @ephedrine-nudge on")
+    #expect(tmuxMarkCommand("") == "tmux set-option -p -t '' @ephedrine-nudge on")
+}
+@Test func shouldNudgeDecision() {
+    let up = Date(timeIntervalSince1970: 1000), slept = Date(timeIntervalSince1970: 500)
+    func n(gap: TimeInterval = 90, targets: [String] = ["%1"], awake: Bool = true, since: Date? = up, sleep: Date = slept) -> Bool {
+        shouldNudge(gap: gap, threshold: 90, targets: targets, awake: awake, downSince: since, lastSleep: sleep)
+    }
+    #expect(n())
+    #expect(!n(gap: 89.9))
+    #expect(!n(targets: []))
+    #expect(!n(awake: false))
+    #expect(!n(sleep: Date(timeIntervalSince1970: 1500)))   // outage began before the last sleep
+    #expect(!n(sleep: up))
+    #expect(!n(since: nil))
+    #expect(n(sleep: .distantPast))
+}

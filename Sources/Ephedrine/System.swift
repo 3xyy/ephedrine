@@ -47,6 +47,56 @@ func runTool(_ path: String, _ args: [String]) -> String {
     return String(data: data, encoding: .utf8) ?? ""
 }
 
+struct ProcRun { let status: Int32; let out: String; let err: String; let timedOut: Bool; let launchFailed: Bool }
+
+/// Run a program with `args`, never waiting more than `timeout` for it (plus a
+/// second or two to stop it). stdin is empty; both pipes drain while it runs.
+/// `tweakEnv` edits a copy of this app's environment. status is -2 on a timeout.
+func runProcess(_ path: String, _ args: [String], tweakEnv: (inout [String: String]) -> Void = { _ in },
+                timeout: TimeInterval) -> ProcRun {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: path)
+    p.arguments = args
+    var env = ProcessInfo.processInfo.environment
+    tweakEnv(&env)
+    p.environment = env
+    p.standardInput = FileHandle.nullDevice
+    let outPipe = Pipe(), errPipe = Pipe()
+    p.standardOutput = outPipe
+    p.standardError = errPipe
+    let exited = DispatchSemaphore(value: 0)
+    p.terminationHandler = { _ in exited.signal() }
+    do { try p.run() } catch {
+        return ProcRun(status: -1, out: "", err: "\(error)", timedOut: false, launchFailed: true)
+    }
+    let lock = NSLock()
+    var outData = Data(), errData = Data()
+    let reads = DispatchGroup()
+    DispatchQueue.global(qos: .utility).async(group: reads) {
+        let d = outPipe.fileHandleForReading.readDataToEndOfFile()
+        lock.lock(); outData = d; lock.unlock()
+    }
+    DispatchQueue.global(qos: .utility).async(group: reads) {
+        let d = errPipe.fileHandleForReading.readDataToEndOfFile()
+        lock.lock(); errData = d; lock.unlock()
+    }
+    var timedOut = false
+    if exited.wait(timeout: .now() + timeout) == .timedOut {
+        timedOut = true
+        p.terminate()
+        if exited.wait(timeout: .now() + 1) == .timedOut {
+            kill(p.processIdentifier, SIGKILL)
+            _ = exited.wait(timeout: .now() + 1)
+        }
+    }
+    _ = reads.wait(timeout: .now() + 1)
+    lock.lock(); defer { lock.unlock() }
+    return ProcRun(status: timedOut ? -2 : p.terminationStatus,
+                   out: String(decoding: outData, as: UTF8.self),
+                   err: String(decoding: errData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines),
+                   timedOut: timedOut, launchFailed: false)
+}
+
 /// Run osascript capturing stdout and stderr, draining both concurrently so a
 /// full stderr pipe can never deadlock the read.
 func runOsascript(_ script: String) -> (out: String, err: String) {

@@ -51,5 +51,18 @@ public func paneMarked(_ showOptionsOutput: String) -> Bool {
 }
 
 public func tmuxMarkCommand(_ target: String) -> String {
-    "tmux set-option -p -t \(target) \(tmuxMarkOption) on"
+    let plain = !target.isEmpty && target.unicodeScalars.allSatisfy {
+        ("a"..."z").contains($0) || ("A"..."Z").contains($0) || ("0"..."9").contains($0) || "%:._-".unicodeScalars.contains($0)
+    }
+    let t = plain ? target : "'" + target.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    return "tmux set-option -p -t \(t) \(tmuxMarkOption) on"
+}
+
+/// Whether an outage that just ended should type into the marked panes: long
+/// enough, panes listed, fully awake, and it began after the last sleep began
+/// (a gap that is mostly sleep, or a path-up before the wake is noticed, never types).
+public func shouldNudge(gap: TimeInterval, threshold: TimeInterval, targets: [String], awake: Bool,
+                        downSince: Date?, lastSleep: Date) -> Bool {
+    guard let since = downSince else { return false }
+    return gap >= threshold && !targets.isEmpty && awake && since > lastSleep
 }

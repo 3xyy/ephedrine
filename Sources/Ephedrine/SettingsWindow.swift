@@ -247,10 +247,15 @@ struct ClaudePane: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("After a network outage, type continue in these tmux panes")
                     ForEach(settings.tmuxTargets, id: \.self) { target in
-                        HStack {
-                            Text(target)
-                            Spacer()
-                            Button("Remove") { settings.tmuxTargets.removeAll { $0 == target } }
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text(target)
+                                Spacer()
+                                Button("Remove") { settings.tmuxTargets.removeAll { $0 == target } }
+                            }
+                            Text(tmuxMarkCommand(target))
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
                         }
                     }
                     HStack {

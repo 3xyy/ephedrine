@@ -551,12 +551,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     /// or more, types "continue" into the tmux panes the owner marked, if the Mac
     /// is fully awake and past the post-wake quiet.
     func networkChanged(_ ok: Bool) {
-        let wasDown = outage.downSince != nil
+        let downSince = outage.downSince
+        let wasDown = downSince != nil
         let gap = outage.step(satisfied: ok, now: Date())
         if !ok { if !wasDown { logLine("network down") }; return }
         guard let gap else { return }
         logLine("network back after \(Int(gap.rounded()))s")
-        guard gap >= settings.outageNudgeSeconds, !settings.tmuxTargets.isEmpty, fullyAwake else { return }
+        guard shouldNudge(gap: gap, threshold: settings.outageNudgeSeconds, targets: settings.tmuxTargets,
+                          awake: fullyAwake, downSince: downSince, lastSleep: lastWillSleep) else { return }
         nudgeTmux(targets: settings.tmuxTargets, pressEnter: settings.tmuxPressEnter, canTypeNow: canTypeNow)
     }
 

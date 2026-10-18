@@ -51,7 +51,8 @@ public enum StatusLines {
         if dockerPaused { parts.append("Docker paused") }
         if muted { parts.append("muted") }
         if lowPower { parts.append("Low Power Mode on") }
-        if let g = lastGap, g > 0 { parts.append("last network gap \(Int(g.rounded()))s") }
+        // The gap is context for a held line, never a line of its own.
+        if !parts.isEmpty, let g = lastGap, g > 0 { parts.append("last network gap \(Int(g.rounded()))s") }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
