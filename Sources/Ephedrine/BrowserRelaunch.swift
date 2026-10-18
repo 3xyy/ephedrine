@@ -4,11 +4,14 @@ import EphedrineCore
 
 struct ThrottledBrowser: Equatable { let bundleID: String; let name: String }
 
-/// `ps`'s own view of a process's command line; empty means unknown (never a guess).
-private func browserArgs(pid: pid_t) -> String {
-    let r = runProcess("/bin/ps", ["-ww", "-o", "args=", "-p", "\(pid)"], timeout: 3)
-    guard !r.timedOut, !r.launchFailed, r.status == 0 else { return "" }
-    return r.out.trimmingCharacters(in: .whitespacesAndNewlines)
+/// A process's exact argv from the kernel (KERN_PROCARGS2); nil means unknown (never a guess).
+func browserArgv(pid: pid_t) -> [String]? {
+    var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+    var size = 0
+    guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+    var buf = [UInt8](repeating: 0, count: size)
+    guard sysctl(&mib, 3, &buf, &size, nil, 0) == 0 else { return nil }
+    return parseProcArgs2(Array(buf.prefix(size)))
 }
 
 private func runningInstances(_ bundleID: String) -> [NSRunningApplication] {
@@ -62,26 +65,28 @@ extension AppController {
         guard !browserScanning else { return }
         browserScanning = true
         let generation = browserScanGeneration
+        // A browser being relaunched is left alone: its state is in flux.
+        let busy = browserRelaunching
         let found: [(id: String, name: String, pids: [pid_t])] = chromiumBrowsers.compactMap { id in
-            let apps = runningInstances(id)
+            let apps = busy.contains(id) ? [] : runningInstances(id)
             return apps.isEmpty ? nil : (id, apps[0].localizedName ?? id, apps.map(\.processIdentifier))
         }
         browserQueue.async { [weak self] in
             var throttled: [ThrottledBrowser] = []
-            var fine = Set(chromiumBrowsers)   // not running, or running with both flags
+            var fine = Set<String>()   // running with both flags: its problem is over
             for f in found {
-                // Unknown (empty) args count as not throttled, and keep a problem line alive.
-                let lines = f.pids.map { browserArgs(pid: $0) }.filter { !$0.isEmpty }
-                if lines.contains(where: { !hasUnthrottleFlags(args: $0) }) {
-                    throttled.append(ThrottledBrowser(bundleID: f.id, name: f.name)); fine.remove(f.id)
-                } else if lines.isEmpty { fine.remove(f.id) }
+                // Unreadable argv counts as not throttled, and keeps a problem line alive.
+                let argvs = f.pids.compactMap { browserArgv(pid: $0) }
+                if argvs.contains(where: { !hasUnthrottleFlags(argv: $0) }) {
+                    throttled.append(ThrottledBrowser(bundleID: f.id, name: f.name))
+                } else if !argvs.isEmpty { fine.insert(f.id) }
             }
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.browserScanning = false
                 guard generation == self.browserScanGeneration, self.browserScanWanted else { return }
                 self.throttledBrowsers = throttled
-                // A problem ends once its browser is gone or fixed; an unreadable one keeps its line.
+                // A problem ends only once its browser runs with both flags (or on a good relaunch).
                 for id in fine { self.relaunchProblems[id] = nil }
             }
         }
@@ -111,16 +116,30 @@ extension AppController {
         let apps = runningInstances(b.bundleID)
         let pids = apps.map(\.processIdentifier)
         browserQueue.async { [weak self] in
-            let argLines = pids.map { browserArgs(pid: $0) }
-            DispatchQueue.main.async { self?.finishRelaunch(b, apps: apps, argLines: argLines) }
+            let argvs = pids.map { browserArgv(pid: $0) }
+            // Every directory the browser was told to use must exist, or the profile can't be kept.
+            let dirsOK = argvs.allSatisfy { argv in
+                guard let argv = argv else { return false }
+                return profileDirectoriesToCheck(argv: argv).allSatisfy { d in
+                    var isDir: ObjCBool = false
+                    return FileManager.default.fileExists(atPath: d, isDirectory: &isDir) && isDir.boolValue
+                }
+            }
+            DispatchQueue.main.async { self?.finishRelaunch(b, apps: apps, argvs: argvs, dirsOK: dirsOK) }
         }
     }
 
-    private func finishRelaunch(_ b: ThrottledBrowser, apps: [NSRunningApplication], argLines: [String]) {
+    private func finishRelaunch(_ b: ThrottledBrowser, apps: [NSRunningApplication], argvs: [[String]?], dirsOK: Bool) {
         func done() { browserRelaunching.remove(b.bundleID) }
         guard !apps.isEmpty else { done(); return }   // already quit; the next scan settles the menu
-        guard !argLines.contains("") else {
+        guard dirsOK, !argvs.contains(where: { $0 == nil }) else {
             browserProblem(b, "Couldn't read \(b.name)'s settings, so it wasn't quit")
+            done(); return
+        }
+        let known = argvs.compactMap { $0 }
+        if known.allSatisfy({ hasUnthrottleFlags(argv: $0) }) {   // fixed since the menu was drawn
+            throttledBrowsers.removeAll { $0.bundleID == b.bundleID }
+            relaunchProblems[b.bundleID] = nil
             done(); return
         }
         logLine("browser relaunch: quitting \(b.name) (\(apps.count) instance\(apps.count == 1 ? "" : "s"))")
@@ -134,9 +153,9 @@ extension AppController {
             self.browserQueue.async {
                 // The first instance reopens with -b; each further one needs its own (-n).
                 var failure: String?
-                for (i, line) in argLines.enumerated() {
+                for (i, argv) in known.enumerated() {
                     let r = runProcess("/usr/bin/open", (i == 0 ? ["-b", b.bundleID] : ["-n", "-b", b.bundleID])
-                                       + ["--args"] + relaunchArguments(args: line), timeout: 15)
+                                       + ["--args"] + relaunchArguments(argv: argv), timeout: 15)
                     if r.timedOut || r.launchFailed || r.status != 0 {
                         let why = r.timedOut ? "open didn't answer" : (r.err.split(whereSeparator: \.isNewline).first.map(String.init) ?? "exit \(r.status)")
                         failure = "\(b.name) quit but couldn't be reopened (\(String(why.prefix(120))))"
@@ -161,9 +180,8 @@ extension AppController {
     private func waitForQuit(_ apps: [NSRunningApplication], deadline: Date, _ completion: @escaping (Bool) -> Void) {
         if apps.allSatisfy(\.isTerminated) { completion(true); return }
         if Date() >= deadline { completion(false); return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            guard self != nil else { return }
-            self?.waitForQuit(apps, deadline: deadline, completion)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            self.waitForQuit(apps, deadline: deadline, completion)   // the controller lives for the whole run
         }
     }
 }

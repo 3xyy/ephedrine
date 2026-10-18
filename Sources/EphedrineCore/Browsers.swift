@@ -9,66 +9,53 @@ public let chromiumBrowsers = [
     "ai.perplexity.comet", "com.brave.Browser", "com.microsoft.edgemac",
 ]
 
-/// Split a command line into words: single quotes are literal, double quotes
-/// allow `\"` and `\\`, and a backslash outside quotes escapes the next character.
-public func shellWords(_ args: String) -> [String] {
-    var words: [String] = []
-    var cur = ""
-    var started = false   // an empty quoted word ('') still counts
-    var quote: Character?
-    var escaped = false
-    for c in args {
-        if escaped {
-            if quote == "\"" && c != "\"" && c != "\\" { cur.append("\\") }
-            cur.append(c); escaped = false; continue
-        }
-        if let q = quote {
-            if c == q { quote = nil }
-            else if c == "\\" && q == "\"" { escaped = true }
-            else { cur.append(c) }
-            continue
-        }
-        switch c {
-        case "'", "\"": quote = c; started = true
-        case "\\": escaped = true; started = true
-        case " ", "\t", "\n":
-            if started || !cur.isEmpty { words.append(cur); cur = ""; started = false }
-        default: cur.append(c); started = true
-        }
+/// A process's argv from the bytes of `sysctl kern.procargs2`: an Int32 argc,
+/// the exec path, NUL padding, then argc NUL-terminated arguments (the
+/// environment follows and is ignored). nil when the bytes are cut short or
+/// make no sense.
+public func parseProcArgs2(_ data: [UInt8]) -> [String]? {
+    guard data.count >= 4 else { return nil }
+    let argc = Int(Int32(bitPattern: UInt32(data[0]) | UInt32(data[1]) << 8 | UInt32(data[2]) << 16 | UInt32(data[3]) << 24))
+    guard argc > 0, argc <= 4096 else { return nil }
+    var i = 4
+    func skip(_ nul: Bool) { while i < data.count && (data[i] == 0) == nul { i += 1 } }
+    skip(false)                                   // exec path
+    guard i < data.count else { return nil }
+    skip(true)                                    // padding
+    var argv: [String] = []
+    while argv.count < argc {
+        guard i < data.count else { return nil }
+        guard let end = data[i...].firstIndex(of: 0) else { return nil }   // last argument not terminated
+        argv.append(String(decoding: data[i..<end], as: UTF8.self))
+        i = end + 1
     }
-    if escaped { cur.append("\\") }
-    if started || !cur.isEmpty { words.append(cur) }
-    return words
+    return argv
 }
 
-private func hasFlag(_ words: [String], _ flag: String) -> Bool {
-    words.contains { $0 == flag || $0.hasPrefix(flag + "=") }
+private func hasFlag(_ argv: [String], _ flag: String) -> Bool {
+    argv.contains { $0 == flag || $0.hasPrefix(flag + "=") }
 }
 
-/// Both flags are on the command line (`--flag=value` counts).
-public func hasUnthrottleFlags(args: String) -> Bool {
-    let words = shellWords(args)
-    return unthrottleFlags.allSatisfy { hasFlag(words, $0) }
+/// Both flags are in the argument list (`--flag=value` counts).
+public func hasUnthrottleFlags(argv: [String]) -> Bool {
+    unthrottleFlags.allSatisfy { hasFlag(argv, $0) }
 }
+
+private let profileFlags = ["--user-data-dir=", "--profile-directory="]
 
 /// The flags to relaunch with: the unthrottle pair plus the original profile
-/// choice, so the browser comes back in the same profile. `ps` joins argv with
-/// plain spaces, so a value with spaces arrives as several words: the words that
-/// follow a profile flag belong to it until the next flag, URL or absolute path.
-public func relaunchArguments(args: String) -> [String] {
-    let words = shellWords(args)
-    var out = unthrottleFlags
-    var i = 0
-    while i < words.count {
-        let w = words[i]
-        i += 1
-        guard w.hasPrefix("--user-data-dir=") || w.hasPrefix("--profile-directory=") else { continue }
-        var value = w
-        while i < words.count, let f = words[i].first, f != "-", f != "/", !words[i].contains("://") {
-            value += " " + words[i]; i += 1
-        }
-        out.append(value)
-    }
+/// choice, so the browser comes back in the same profile.
+public func relaunchArguments(argv: [String]) -> [String] {
+    unthrottleFlags + argv.filter { a in profileFlags.contains { a.hasPrefix($0) } }
+}
+
+/// Directories that must exist before the browser is quit: the user data dir,
+/// and the profile inside it when both flags are present.
+public func profileDirectoriesToCheck(argv: [String]) -> [String] {
+    func value(_ f: String) -> String? { argv.last { $0.hasPrefix(f) }.map { String($0.dropFirst(f.count)) } }
+    guard let dir = value("--user-data-dir=") else { return [] }
+    var out = [dir]
+    if let p = value("--profile-directory=") { out.append((dir as NSString).appendingPathComponent(p)) }
     return out
 }
 
