@@ -135,19 +135,13 @@ struct SettingsView: View {
     }
 
     @ViewBuilder private func paneArea(_ p: SettingsPane) -> some View {
-        switch p {
-        case .now, .general, .sleep:
-            ScrollView {
-                paneContent(p)
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 20)
-                    .frame(maxWidth: .infinity, alignment: .top)
-            }
-            .id(p)   // each pane opens at its top
-        case .lid, .claude, .away, .about:
-            // Not redesigned yet: their sections, in the grouped form they had.
-            Form { paneContent(p) }.formStyle(.grouped)
+        ScrollView {
+            paneContent(p)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 20)
+                .frame(maxWidth: .infinity, alignment: .top)
         }
+        .id(p)   // each pane opens at its top
     }
 
     @ViewBuilder func paneContent(_ p: SettingsPane) -> some View {
@@ -157,7 +151,7 @@ struct SettingsView: View {
         case .claude: ClaudePane(settings: settings, controller: controller, ui: ui, now: now)
         case .now: NowPane(controller: controller, now: now)
         case .lid: LidPane(settings: settings, controller: controller, ui: ui, now: now)
-        case .away: AwayPane(settings: settings)
+        case .away: AwayPane(settings: settings, controller: controller)
         case .about: AboutPane(settings: settings, controller: controller, ui: ui, now: now)
         }
     }
@@ -324,67 +318,101 @@ struct ClaudePane: View {
     let now: Date   // re-renders each second, so the cmux line follows cmux opening and quitting
 
     var body: some View {
-        Group {
-            Section("Retry after API errors") {
-                Picker("Retry", selection: $settings.autoContinueMode) {
-                    ForEach(AutoContinueMode.allCases, id: \.self) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.radioGroup)
-                .labelsHidden()
-                Tip(settings.autoContinueMode.tip + " Types “continue” only when Claude Code's own screen is showing, so a plain shell is never typed into. Terminal.app, and cmux once connected.")
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("After a network outage, type continue in these tmux panes")
-                    ForEach(settings.tmuxTargets, id: \.self) { target in
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack {
-                                Text(target)
-                                Spacer()
-                                Button("Remove") { settings.tmuxTargets.removeAll { $0 == target } }
-                            }
-                            Text(tmuxMarkCommand(target))
-                                .font(.system(.caption, design: .monospaced))
-                                .textSelection(.enabled)
+        let banner = SettingsBanners.claude(autoContinue: settings.autoContinueMode, autoResumeLimit: settings.autoResumeLimit,
+                                            cmux: controller.cmuxRowState)
+        let badge = SettingsBanners.cmuxBadge(controller.cmuxRowState)
+        let cmuxSaved = controller.cmuxSavedState
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsBanner(symbol: SettingsPane.claude.symbol, headline: banner.headline, sentence: banner.sentence)
+            SettingsColumns {
+                SettingsCard(symbol: "arrow.clockwise", title: "Retry after API errors") {
+                    SettingsRow("Retry",
+                                subtitle: settings.autoContinueMode.tip + " Types “continue” only when Claude Code's own screen is showing, so a plain shell is never typed into. Terminal.app, and cmux once connected.") {
+                        Picker("Retry", selection: $settings.autoContinueMode) {
+                            ForEach(AutoContinueMode.allCases, id: \.self) { Text($0.label).tag($0) }
                         }
+                        .pickerStyle(.menu)
                     }
-                    HStack {
+                }
+                SettingsCard(symbol: "gauge.with.dots.needle.50percent", title: "Usage limits") {
+                    SettingsRow("Continue after a usage limit resets",
+                                subtitle: "When Claude Code hits a limit that resets within 6 hours: choose its “wait” option (never upgrade or paid credits), keep the Mac awake, and continue once it resets. On battery it only stays awake for the last hour before the reset. Weekly waits are left alone.") {
+                        Toggle("Continue after a usage limit resets", isOn: $settings.autoResumeLimit).toggleStyle(ClayToggleStyle())
+                    }
+                    SettingsRow("Usage alert", subtitle: "Get a notification when any limit (session, weekly, or per-model) reaches this level.") {
+                        Picker("Usage alert", selection: $settings.usageAlert) {
+                            Text("Off").tag(0)
+                            ForEach([70, 80, 90, 95], id: \.self) { Text("At \($0)%").tag($0) }
+                        }
+                        .pickerStyle(.menu)
+                    }
+                }
+            } right: {
+                SettingsCard(symbol: "terminal", title: "cmux", badge: SettingsBadge(badge.text, tone: tone(badge.tone))) {
+                    SettingsRow("Status", subtitle: controller.cmuxStatus)
+                    SettingsFieldRow("Socket password") {
+                        SecureField(passwordFieldPlaceholder(cmuxSaved, empty: "Socket password"), text: $ui.cmuxPassword)
+                            .settingsField()
+                            .onSubmit { if !ui.cmuxPassword.isEmpty { saveCmuxPassword() } }   // only Save removes one
+                    }
+                    SettingsActionBar(note: savedPasswordLine(cmuxSaved), warning: cmuxSaved == .unreadable) {
+                        SavedLabel(visible: savedLabelVisible(savedAt: ui.cmuxSavedAt, now: now))
+                        Button("Save", action: saveCmuxPassword).buttonStyle(SettingsButtonStyle(.primary))
+                    }
+                    SettingsNote("Lets Ephedrine read cmux's panes and type there with the same rules as in Terminal, and only into an empty Claude Code prompt or its limit menu. Use the password you set in cmux. It's kept in your keychain. Saving an empty field removes it.")
+                }
+                .task { controller.refreshCmux() }
+            }
+            tmuxCard
+        }
+    }
+
+    private func tone(_ t: SettingsBanners.Tone) -> SettingsBadge.Tone {
+        switch t { case .ok: return .ok; case .warn: return .warn; case .dim: return .dim }
+    }
+
+    private var tmuxCard: some View {
+        let typed = ui.tmuxTarget.trimmingCharacters(in: .whitespaces)
+        return SettingsCard(symbol: "rectangle.split.2x1", title: "tmux panes") {
+            SettingsRow("After a network outage, type continue in these tmux panes",
+                        subtitle: settings.tmuxTargets.isEmpty ? "No panes added." : nil)
+            ForEach(settings.tmuxTargets, id: \.self) { target in
+                VStack(spacing: 0) {
+                    SettingsHairline()
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(target).font(.system(size: 13)).foregroundStyle(SettingsColors.text)
+                            Spacer()
+                            Button("Remove") { settings.tmuxTargets.removeAll { $0 == target } }
+                                .buttonStyle(SettingsButtonStyle(.secondary))
+                        }
+                        Text(tmuxMarkCommand(target))
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(SettingsColors.tertiaryText)
+                            .textSelection(.enabled)
+                    }
+                    .padding(.vertical, 8)
+                }
+            }
+            VStack(spacing: 0) {
+                SettingsHairline()
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
                         TextField("Pane, like %3 or work:1.0", text: $ui.tmuxTarget)
+                            .settingsField()
                             .onSubmit(addTmuxTarget)
-                        Button("Add", action: addTmuxTarget)
+                        Button("Add", action: addTmuxTarget).buttonStyle(SettingsButtonStyle(.primary))
                     }
-                    Text(tmuxMarkCommand(ui.tmuxTarget.trimmingCharacters(in: .whitespaces).isEmpty ? "<pane>" : ui.tmuxTarget.trimmingCharacters(in: .whitespaces)))
-                        .font(.system(.caption, design: .monospaced))
+                    Text(tmuxMarkCommand(typed.isEmpty ? "<pane>" : typed))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(SettingsColors.tertiaryText)
                         .textSelection(.enabled)
-                    Tip("Only after an outage of \(Int(settings.outageNudgeSeconds)) seconds or more, and only in a pane you mark by running the command above in tmux. Dead panes, copy mode and panes with input off are skipped.")
                 }
-                Toggle(isOn: $settings.tmuxPressEnter) {
-                    Text("Press Enter after typing")
-                    Tip("Enter also sends anything already typed in that pane.")
-                }
+                .padding(.vertical, 8)
             }
-            Section("cmux") {
-                LabeledContent("Status", value: controller.cmuxStatus)
-                HStack {
-                    SecureField(passwordFieldPlaceholder(controller.cmuxSavedState, empty: "Socket password"), text: $ui.cmuxPassword)
-                        .onSubmit { if !ui.cmuxPassword.isEmpty { saveCmuxPassword() } }   // only Save removes one
-                    Button("Save", action: saveCmuxPassword)
-                    SavedLabel(visible: savedLabelVisible(savedAt: ui.cmuxSavedAt, now: now))
-                }
-                Text(savedPasswordLine(controller.cmuxSavedState)).font(.caption).foregroundStyle(.secondary)
-                Tip("Lets Ephedrine read cmux's panes and type there with the same rules as in Terminal, and only into an empty Claude Code prompt or its limit menu. Use the password you set in cmux. It's kept in your keychain. Saving an empty field removes it.")
-            }
-            .task { controller.refreshCmux() }   // on one section: on the Group it would run once per child
-            Section {
-                Toggle(isOn: $settings.autoResumeLimit) {
-                    Text("Continue after a usage limit resets")
-                    Tip("When Claude Code hits a limit that resets within 6 hours: choose its “wait” option (never upgrade or paid credits), keep the Mac awake, and continue once it resets. On battery it only stays awake for the last hour before the reset. Weekly waits are left alone.")
-                }
-            }
-            Section {
-                Picker("Usage alert", selection: $settings.usageAlert) {
-                    Text("Off").tag(0)
-                    ForEach([70, 80, 90, 95], id: \.self) { Text("At \($0)%").tag($0) }
-                }
-                Tip("Get a notification when any limit (session, weekly, or per-model) reaches this level.")
+            SettingsNote("Only after an outage of \(Int(settings.outageNudgeSeconds)) seconds or more, and only in a pane you mark by running the command above in tmux. Dead panes, copy mode and panes with input off are skipped.")
+            SettingsRow("Press Enter after typing", subtitle: "Enter also sends anything already typed in that pane.") {
+                Toggle("Press Enter after typing", isOn: $settings.tmuxPressEnter).toggleStyle(ClayToggleStyle())
             }
         }
     }
@@ -406,6 +434,13 @@ struct ClaudePane: View {
 struct SavedLabel: View {
     let visible: Bool
     var body: some View {
-        if visible { Label("Saved", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
+        if visible {
+            HStack(spacing: 4) {
+                Image(systemName: "checkmark").font(.system(size: 10, weight: .bold))
+                Text("Saved").font(.system(size: 11.5))
+            }
+            .foregroundStyle(SettingsColors.ok)
+            .accessibilityElement(children: .combine)
+        }
     }
 }

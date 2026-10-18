@@ -34,6 +34,7 @@ enum SettingsColors {
     static let orange = Color(nsColor: claudeOrange)                               // orange fills
     static let warn = dynamic(rgb(0xA65200), rgb(0xFF9F0A))
     static let ok = dynamic(rgb(0x1E7E34), rgb(0x30D158))
+    static let focusRing = Color(nsColor: .keyboardFocusIndicatorColor)
     static let toggleOff = dynamic(black.withAlphaComponent(0.16), white.withAlphaComponent(0.2))
 
     // The banner is warm and dark in both appearances; its text is fixed.
@@ -45,17 +46,41 @@ enum SettingsColors {
 }
 
 /// The switch from the mock: a 32×19 pill, orange when on, with a white knob.
-/// Only the pill shows; the toggle's label is kept for VoiceOver.
+/// Only the pill shows; VoiceOver gets the row's title as its label (rows hide
+/// the control's own label, and a hidden label may not be announced).
 struct ClayToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
-        ClaySwitch(isOn: configuration.$isOn)
-            .accessibilityRepresentation { Toggle(isOn: configuration.$isOn) { configuration.label } }
+        ClayToggleBody(isOn: configuration.$isOn, label: configuration.label)
+    }
+}
+
+private struct SettingsRowTitleKey: EnvironmentKey { static let defaultValue: String? = nil }
+extension EnvironmentValues {
+    /// The title of the row a control sits in; the switch announces it.
+    fileprivate var settingsRowTitle: String? {
+        get { self[SettingsRowTitleKey.self] }
+        set { self[SettingsRowTitleKey.self] = newValue }
+    }
+}
+
+private struct ClayToggleBody<Label: View>: View {
+    @Binding var isOn: Bool
+    let label: Label
+    @Environment(\.settingsRowTitle) private var rowTitle
+
+    var body: some View {
+        ClaySwitch(isOn: $isOn)
+            .accessibilityRepresentation {
+                if let rowTitle { Toggle(isOn: $isOn) { Text(rowTitle) }.accessibilityLabel(rowTitle) }
+                else { Toggle(isOn: $isOn) { label } }
+            }
     }
 }
 
 private struct ClaySwitch: View {
     @Binding var isOn: Bool
     @Environment(\.isEnabled) private var isEnabled
+    @FocusState private var focused: Bool   // a property wrapper, not a macro: fine under the Command Line Tools
 
     var body: some View {
         ZStack(alignment: isOn ? .trailing : .leading) {
@@ -70,6 +95,17 @@ private struct ClaySwitch: View {
         .contentShape(Capsule())
         .onTapGesture { if isEnabled { isOn.toggle() } }
         .animation(.easeOut(duration: 0.15), value: isOn)
+        // Full keyboard access: Tab reaches the switch, Space flips it, and a ring shows where it is.
+        .focusable(isEnabled)
+        .focused($focused)
+        .focusEffectDisabled()
+        .onKeyPress(.space) {
+            guard isEnabled else { return .ignored }
+            isOn.toggle()
+            return .handled
+        }
+        .padding(2)
+        .overlay(Capsule().strokeBorder(SettingsColors.focusRing, lineWidth: 2).opacity(focused ? 1 : 0))
     }
 }
 
@@ -256,6 +292,7 @@ struct SettingsRow<Control: View>: View {
     /// VoiceOver still reads it.
     private var styledControl: some View {
         control
+            .environment(\.settingsRowTitle, title)
             .labelsHidden()
             .fixedSize()
     }
@@ -357,6 +394,48 @@ struct SettingsNote: View {
     }
 }
 
+/// A labelled text or secure field inside a card, the label above it, the
+/// field the card's full width (give it `.settingsField()`).
+struct SettingsFieldRow<Field: View>: View {
+    let label: String
+    let field: Field
+    init(_ label: String, @ViewBuilder field: () -> Field) { self.label = label; self.field = field() }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            SettingsHairline()
+            VStack(alignment: .leading, spacing: 4) {
+                Text(label).font(.system(size: 11.5)).foregroundStyle(SettingsColors.secondaryText)
+                field.frame(maxWidth: .infinity)
+            }
+            .padding(.vertical, 8)
+        }
+    }
+}
+
+/// The line under fields: a status on the left, the buttons on the right.
+struct SettingsActionBar<Buttons: View>: View {
+    let note: String?
+    let warning: Bool
+    let buttons: Buttons
+    init(note: String? = nil, warning: Bool = false, @ViewBuilder buttons: () -> Buttons) {
+        self.note = note; self.warning = warning; self.buttons = buttons()
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let note {
+                Text(note).font(.system(size: 11.5))
+                    .foregroundStyle(warning ? SettingsColors.warn : SettingsColors.tertiaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            buttons
+        }
+        .padding(.bottom, 8)
+    }
+}
+
 /// Two columns of cards, each stacked from the top. A pane with one card puts
 /// it straight in the page instead, so it spans the width.
 struct SettingsColumns<Left: View, Right: View>: View {
@@ -369,8 +448,8 @@ struct SettingsColumns<Left: View, Right: View>: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
-            VStack(spacing: 14) { left }.frame(minWidth: 0, maxWidth: .infinity, alignment: .top)
-            VStack(spacing: 14) { right }.frame(minWidth: 0, maxWidth: .infinity, alignment: .top)
+            VStack(spacing: 14) { left }.fixedSize(horizontal: false, vertical: true).frame(minWidth: 0, maxWidth: .infinity, alignment: .top)
+            VStack(spacing: 14) { right }.fixedSize(horizontal: false, vertical: true).frame(minWidth: 0, maxWidth: .infinity, alignment: .top)
         }
     }
 }
