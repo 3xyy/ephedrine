@@ -88,3 +88,65 @@ private let dockerTree = [ProcEntry(pid: 1, ppid: 0, start: 0), ProcEntry(pid: 2
     let loop = [ProcEntry(pid: 200, ppid: 201, start: 1), ProcEntry(pid: 201, ppid: 200, start: 2)]
     #expect(claudeUsesDocker(dockerPIDs: [200, 201], procs: loop, claudePIDs: [300]) == nil)
 }
+
+// ── Review round 1 (R36, R37, unreadable files) ──
+
+// R36: an output the owner muted is neither recorded nor touched; an entry a
+// crash left for a device still muted is kept as the owner's.
+@Test func muteStartLeavesOwnerMuted() {
+    let mutedNow = SavedOutput(uid: "BuiltIn", name: "MacBook Speakers", volume: 0.5, muted: true)
+    #expect(muteStartPlan(saved: [], current: mutedNow) == .leave)
+    #expect(muteStartPlan(saved: [buds], current: mutedNow) == .leave)
+    #expect(muteStartPlan(saved: [], current: speakers) == .mute([speakers]))
+    #expect(muteStartPlan(saved: [buds], current: speakers) == .mute([buds, speakers]))
+}
+@Test func muteStartKeepsCrashEntry() {
+    let ours = SavedOutput(uid: "BuiltIn", name: "MacBook Speakers", volume: 0, muted: true)   // muted by a hold a crash cut short
+    #expect(muteStartPlan(saved: [speakers, buds], current: ours) == .mute([speakers, buds]))
+    // The entry says the owner had it muted: still theirs, nothing to hold.
+    let ownersMuted = SavedOutput(uid: "BuiltIn", name: "MacBook Speakers", volume: 0.5, muted: true)
+    #expect(muteStartPlan(saved: [ownersMuted], current: ours) == .leave)
+    // Unmuted since (by hand, or by the watchdog): the old entry is out of date.
+    let fresh = SavedOutput(uid: "BuiltIn", name: "MacBook Speakers", volume: 0.7, muted: false)
+    #expect(muteStartPlan(saved: [buds, ownersMuted], current: fresh) == .mute([buds, fresh]))
+    #expect(muteStartPlan(saved: [speakers, buds], current: fresh) == .mute([buds, fresh]))
+}
+
+// R37: put a saved level back only on a keyboard that still reads off.
+@Test func backlightRestoreOnlyWhereStillOff() {
+    let off = backlightRestorePlan(saved: [1: 0.5], listed: [1], builtIn: 1, levelNow: { _ in 0 })
+    #expect(off.restore == [1: 0.5] && off.drop.isEmpty && off.keep.isEmpty)
+    let setByHand = backlightRestorePlan(saved: [1: 0.5], listed: [1], builtIn: 1, levelNow: { _ in 0.0625 })   // the lowest step
+    #expect(setByHand.restore.isEmpty && setByHand.drop == [1] && setByHand.keep.isEmpty)
+}
+@Test func backlightRestoreKeepsUnreadable() {
+    let unreadable = backlightRestorePlan(saved: [1: 0.5], listed: [1], builtIn: 1, levelNow: { _ in nil })
+    #expect(unreadable.restore.isEmpty && unreadable.drop.isEmpty && unreadable.keep == [1: 0.5])
+    let negative = backlightRestorePlan(saved: [1: 0.5], listed: [1], builtIn: 1, levelNow: { _ in -1 })
+    #expect(negative.keep == [1: 0.5] && negative.restore.isEmpty)
+    // No keyboard listed at all (the client answered nothing): keep for later.
+    let none = backlightRestorePlan(saved: [7: 0.4], listed: [], builtIn: nil, levelNow: { _ in 0 })
+    #expect(none.keep == [7: 0.4] && none.restore.isEmpty && none.drop.isEmpty)
+}
+@Test func backlightRestoreMapsToBuiltIn() {
+    // The id changed (a restart can renumber it): the level goes to today's built-in keyboard.
+    let moved = backlightRestorePlan(saved: [7: 0.4], listed: [1], builtIn: 1, levelNow: { $0 == 1 ? 0 : nil })
+    #expect(moved.restore == [1: 0.4] && moved.drop.isEmpty && moved.keep.isEmpty)
+    // An entry under the keyboard's own id wins over one mapped onto it.
+    let both = backlightRestorePlan(saved: [1: 0.5, 7: 0.4], listed: [1], builtIn: 1, levelNow: { _ in 0 })
+    #expect(both.restore == [1: 0.5] && both.drop == [7] && both.keep.isEmpty)
+}
+
+// Unreadable state files are never taken for empty ones (they'd be overwritten or deleted).
+@Test func stateFilesUnreadableIsNotEmpty() {
+    #expect(decodeSavedOutputs(nil) == [])
+    #expect(decodeSavedOutputs(Data()) == [])
+    #expect(decodeSavedOutputs(Data("{\"uid\":".utf8)) == nil)
+    #expect(decodeSavedOutputs(try! JSONEncoder().encode([speakers])) == [speakers])
+    #expect(decodeBacklightLevels(nil) == [:])
+    #expect(decodeBacklightLevels(Data()) == [:])
+    #expect(decodeBacklightLevels(Data("[1,0.5]".utf8)) == nil)
+    #expect(decodeBacklightLevels(Data("{\"kbd\":0.5}".utf8)) == nil)
+    #expect(decodeBacklightLevels(Data("{\"95158272\":0.5}".utf8)) == [95158272: 0.5])
+    #expect(decodeBacklightLevels(encodeBacklightLevels([95158272: 0.25, 3: 1])) == [95158272: 0.25, 3: 1])
+}

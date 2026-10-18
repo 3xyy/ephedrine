@@ -227,12 +227,13 @@ func uninstallLidSetup() -> String? {
 /// our Low Power Mode back off, and unmutes the sound the lid-shut hold muted.
 final class LidWatchdog {
     private var proc: Process?
-    func start(mutedOutputsPath: String) {
+    /// `mutingPath`: the marker that exists while the hold has the default output muted.
+    func start(mutingPath: String) {
         if proc?.isRunning == true { return }
         let marker = shellQuoted(lidMarkerPath)
         let pids = shellQuoted(pausedPidsPath)
         let lowPower = shellQuoted(lowPowerMarkerPath)
-        let muted = shellQuoted(mutedOutputsPath)
+        let muting = shellQuoted(mutingPath)
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
         p.arguments = ["-c", """
@@ -241,7 +242,7 @@ final class LidWatchdog {
             [ -s \(pids) ] && /bin/kill -CONT $(/bin/cat \(pids)) 2>/dev/null
             [ -f \(marker) ] && /usr/bin/sudo -n /usr/bin/pmset -a disablesleep 0 && /bin/rm -f \(marker)
             [ -f \(lowPower) ] && /usr/bin/sudo -n /usr/bin/pmset -b lowpowermode 0 && /bin/rm -f \(lowPower)
-            [ -s \(muted) ] && /usr/bin/osascript -e 'set volume without output muted'
+            [ -f \(muting) ] && /usr/bin/osascript -e 'set volume without output muted' && /bin/rm -f \(muting)
             """]
         p.standardInput = FileHandle.nullDevice
         p.standardOutput = FileHandle.nullDevice
@@ -403,14 +404,16 @@ extension AppController {
 
     /// The watchdog undoes disablesleep and Low Power Mode, un-pauses apps
     /// and unmutes if Ephedrine dies. It runs while any of them is ours, not
-    /// only in lid mode. The muted-outputs file keeps its entries for the next
-    /// launch: the watchdog unmutes but doesn't know which device was ours.
+    /// only in lid mode. Its unmute is blind (it hits whatever output is the
+    /// default), so it's armed by the `muting` marker, which exists only while
+    /// the hold has muted the default output. Entries waiting for a device to
+    /// come back are left to the launch restore and evaluate's retry.
     func updateWatchdog() {
         let pids = (try? String(contentsOfFile: pausedPidsPath, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if fm.fileExists(atPath: lidMarkerPath) || fm.fileExists(atPath: lowPowerMarkerPath) || !pids.isEmpty
-            || mutedOutputsPending() {
-            lidWatchdog.start(mutedOutputsPath: mutedOutputsPath)
+            || muteWatchdogArmed() {
+            lidWatchdog.start(mutingPath: mutingMarkerPath)
         } else {
             lidWatchdog.stop()
         }
@@ -460,12 +463,13 @@ extension AppController {
     /// reason (the lid opening, lid mode ending, an external display coming
     /// on). It mutes, turns the keyboard light off and runs the Docker rule at
     /// its start, and undoes all of it at its end. Pausing other apps (same
-    /// rules as "I'm leaving") is one of its actions, with its own switch:
-    /// turned off mid-hold, the apps resume. The built-in screen is already
-    /// off with the lid shut, so there's nothing to dim.
+    /// rules as "I'm leaving") and the Docker rule have their own switches:
+    /// turned off mid-hold, what they paused resumes. The built-in screen is
+    /// already off with the lid shut, so there's nothing to dim.
     func updateLidPause(closed: Bool) {
         let hold = lidShutHold(closed: closed)
         if lidHoldActive && !hold { endLidHold(closed: closed) }
+        if dockerPaused && !settings.lidDockerRule && !awayMode { resumeDocker("Docker rule turned off") }
         if lidPaused && (!closed || !settings.lidPauseApps) {   // the lid open: only if the hold's end missed it
             let n = pausedAppCount
             resumeApps(); clearAwayState(); lidPaused = false
@@ -481,7 +485,7 @@ extension AppController {
         lidHoldActive = true
         lidHoldGeneration += 1
         if settings.lidMute {
-            lidWatchdog.start(mutedOutputsPath: mutedOutputsPath)   // before muting, so a crash right after still unmutes
+            lidWatchdog.start(mutingPath: mutingMarkerPath)   // before muting, so a crash right after still unmutes
             if let o = muteDefaultOutput() { logLine("lid shut, muted \(o.name ?? o.uid)") }
             updateWatchdog()
         }
@@ -490,7 +494,7 @@ extension AppController {
                 logLine("lid shut, left the keyboard light alone: \(why)")
             } else {
                 let n = KeyboardBacklight.shared.dim().count
-                if n > 0 { logLine("lid shut, turned the keyboard light off") }
+                if n > 0 { logLine("lid shut, turned the keyboard light off" + (n > 1 ? " on \(n) keyboards" : "")) }
             }
         }
         // "I'm leaving" owns the paused list while it's on.
@@ -502,26 +506,27 @@ extension AppController {
     private func endLidHold(closed: Bool) {
         lidHoldActive = false
         lidHoldGeneration += 1   // a Docker check still running belongs to a hold that's over
-        restoreLidExtras()
+        restoreLidExtras(endingHold: true)
         let why = closed ? "lid-closed hold ended" : "lid opened"
         if lidPaused {
             let n = pausedAppCount
             resumeApps(); clearAwayState(); lidPaused = false
             logLine("\(why), resumed \(n) apps")
         } else if dockerPaused && !awayMode {
-            resumeApps(); clearAwayState()
-            logLine("\(why), resumed Docker")
+            resumeDocker(why)
         }
     }
 
     /// Unmute what the hold muted (muteRestorePlan) and put the keyboard
-    /// light back, from their files. Also at launch, sleep and quit, and every
-    /// 30 s while a muted output waits to reconnect.
-    func restoreLidExtras() {
+    /// light back (backlightRestorePlan), from their files. Also at launch,
+    /// sleep and quit, and every 30 s while something waits. `endingHold`
+    /// (the hold's end, quit): the watchdog's unmute is disarmed whatever is
+    /// left; a device that's gone is left to the launch restore and the retry.
+    func restoreLidExtras(endingHold: Bool = false) {
         if mutedOutputsPending() { restoreOutputs() }
-        if fm.fileExists(atPath: keyboardBacklightPath) {
-            let levels = KeyboardBacklight.shared.savedLevels()
-            if KeyboardBacklight.shared.restore(levels) > 0 { logLine("turned the keyboard light back on") }
+        if endingHold { disarmMuteWatchdog() }
+        if fm.fileExists(atPath: keyboardBacklightPath), KeyboardBacklight.shared.restoreSaved() > 0 {
+            logLine("turned the keyboard light back on")
         }
         updateWatchdog()
     }

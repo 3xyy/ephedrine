@@ -121,9 +121,9 @@ extension AppController {
             && settings.lidDockerRule && !awayMode && !dockerPaused
     }
 
-    /// SIGSTOP Docker Desktop's processes, the way suspendApps stops apps:
-    /// recorded (and the record checked) first, then only those still the
-    /// same process, children before parents.
+    /// SIGSTOP Docker Desktop's processes through stopRecorded, the way
+    /// suspendApps stops apps: recorded (and the record checked) first, then
+    /// only those still the same process, children before parents.
     private func stopDocker() {
         let procs = processSnapshot()
         let docker = dockerProcesses(in: procs).filter { p in !pausedProcesses.contains { $0.pid == p.pid } }
@@ -135,28 +135,9 @@ extension AppController {
             logLine("kept Docker running: \(why)")
             return
         }
-        let entries = docker.map { PausedProcess(pid: $0.pid, start: $0.start) }
-        pausedProcesses += entries
-        guard persistAwayState() else {
-            pausedProcesses.removeAll { entries.contains($0) }
-            persistAwayState()
-            logLine("Docker rule: couldn't record what to pause, left Docker running")
-            return
-        }
-        let now = processSnapshot()
-        let live = now.isEmpty ? [] : entries.filter { stillSame($0, in: now) }
-        var failed = Set<pid_t>()
-        for p in live.reversed() {   // children first, parents last
-            if kill(p.pid, SIGSTOP) != 0 { failed.insert(p.pid) }
-        }
-        let stopped = Set(live.map(\.pid)).subtracting(failed)
-        pausedProcesses.removeAll { entries.contains($0) && !stopped.contains($0.pid) }
-        guard !stopped.isEmpty else {
-            persistAwayState()
-            logLine("Docker rule: Docker's processes changed before the stop, left it running")
-            return
-        }
-        dockerPaused = true
+        let stopped = stopRecorded(docker.map { PausedProcess(pid: $0.pid, start: $0.start) }, logPrefix: "Docker rule: ")
+        guard !stopped.isEmpty else { logLine("Docker rule: left Docker running"); return }
+        dockerPausedProcesses = stopped
         logLine("lid shut, paused Docker (\(stopped.count) processes): no container running")
     }
 }

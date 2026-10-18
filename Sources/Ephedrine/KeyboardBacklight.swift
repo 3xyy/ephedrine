@@ -9,9 +9,11 @@ import EphedrineCore
 // private CoreBrightness class `KeyboardBrightnessClient`, and only when every
 // method it calls has the type encoding Insomnia measured
 // (keyboardClientRefusal). A call through a changed signature reads garbage
-// or crashes, so any refusal means the light is left alone and Settings says why.
-// Levels are written to keyboard-backlight.json before the light goes off, so
-// a crash leaves them for the next launch to put back.
+// or crashes, so any refusal means the light is left alone, Settings says so
+// and the log says why. Levels are written to keyboard-backlight.json before
+// the light goes off, so a crash leaves them for the next launch to put back.
+// A level goes back only on a keyboard that still reads off
+// (backlightRestorePlan); one that can't be put back yet stays in the file.
 
 let keyboardBacklightPath = "\(home)/.claude/ephedrine/keyboard-backlight.json"
 
@@ -19,7 +21,8 @@ let keyboardBacklightPath = "\(home)/.claude/ephedrine/keyboard-backlight.json"
 /// after keyboardClientRefusal has passed, so each call matches the method's
 /// real signature.
 @objc private protocol KeyboardBrightnessClientBridge {
-    @objc(copyKeyboardBacklightIDs) func copyKeyboardBacklightIDs() -> NSArray?
+    // AnyObject, checked with `as? [NSNumber]`: typed NSArray, another class would crash the call site.
+    @objc(copyKeyboardBacklightIDs) func copyKeyboardBacklightIDs() -> AnyObject?
     @objc(isKeyboardBuiltIn:) func isKeyboardBuiltIn(_ keyboard: UInt64) -> Bool
     @objc(brightnessForKeyboard:) func brightness(forKeyboard keyboard: UInt64) -> Float
     @objc(setBrightness:forKeyboard:) func setBrightness(_ level: Float, forKeyboard keyboard: UInt64) -> Bool
@@ -57,24 +60,34 @@ final class KeyboardBacklight {
         clientClass = type
     }
 
-    private func builtInKeyboards(_ c: KeyboardBrightnessClientBridge) -> [UInt64] {
-        ((c.copyKeyboardBacklightIDs() as? [NSNumber]) ?? []).map(\.uint64Value).filter { c.isKeyboardBuiltIn($0) }
+    private func listedKeyboards(_ c: KeyboardBrightnessClientBridge) -> [UInt64] {
+        ((c.copyKeyboardBacklightIDs() as? [NSNumber]) ?? []).map(\.uint64Value)
     }
 
-    /// The levels keyboard-backlight.json holds (keyboard id → level), empty when there's none.
-    func savedLevels() -> [UInt64: Float] {
-        guard let d = fm.contents(atPath: keyboardBacklightPath),
-              let raw = try? JSONDecoder().decode([String: Float].self, from: d) else { return [:] }
-        var out: [UInt64: Float] = [:]
-        for (k, v) in raw { if let id = UInt64(k) { out[id] = v } }
-        return out
+    private func builtInKeyboards(_ c: KeyboardBrightnessClientBridge) -> [UInt64] {
+        listedKeyboards(c).filter { c.isKeyboardBuiltIn($0) }
+    }
+
+    private var unreadableLogged = false
+    private var keepLogged = false
+
+    /// The levels keyboard-backlight.json holds (keyboard id → level): empty
+    /// when there's none, nil (logged once) when it's there but can't be read.
+    /// An unreadable file is left as it is, never overwritten or deleted.
+    func savedLevels() -> [UInt64: Float]? {
+        guard let levels = decodeBacklightLevels(fm.contents(atPath: keyboardBacklightPath)) else {
+            if !unreadableLogged { unreadableLogged = true; logLine("\(keyboardBacklightPath) can't be read, leaving it as it is") }
+            return nil
+        }
+        unreadableLogged = false
+        return levels
     }
 
     private func save(_ levels: [UInt64: Float]) -> Bool {
         if levels.isEmpty { try? fm.removeItem(atPath: keyboardBacklightPath); return true }
-        let raw = Dictionary(uniqueKeysWithValues: levels.map { (String($0.key), $0.value) })
         do {
-            try JSONEncoder().encode(raw).write(to: URL(fileURLWithPath: keyboardBacklightPath), options: .atomic)
+            guard let d = encodeBacklightLevels(levels) else { throw CocoaError(.coderInvalidValue) }
+            try d.write(to: URL(fileURLWithPath: keyboardBacklightPath), options: .atomic)
             return true
         } catch {
             logLine("couldn't write \(keyboardBacklightPath): \(error.localizedDescription)")
@@ -84,35 +97,63 @@ final class KeyboardBacklight {
 
     /// Turn the built-in keyboards' light off, after writing down each lit
     /// one's level. Levels saved already (a hold a crash cut short) win: the
-    /// light reads 0 now because of us. Returns the saved levels, empty if
-    /// nothing was switched off.
+    /// light reads 0 now because of us. Returns the keyboards whose light
+    /// actually went off, with the level saved for each.
     func dim() -> [UInt64: Float] {
         guard refusal == nil, let c = client else { return [:] }
-        var levels = savedLevels()
-        for id in builtInKeyboards(c) where levels[id] == nil {
+        guard var levels = savedLevels() else { return [:] }   // can't record without overwriting it
+        var lit: [UInt64] = []
+        for id in builtInKeyboards(c) {
             let level = c.brightness(forKeyboard: id)
-            if level > 0 { levels[id] = level }
+            guard level > 0 else { continue }
+            lit.append(id)
+            if levels[id] == nil { levels[id] = level }
         }
-        guard !levels.isEmpty else { return [:] }
+        guard !lit.isEmpty else { return [:] }
         guard save(levels) else { return [:] }   // no record, no change
-        for id in levels.keys { _ = c.setBrightness(0, forKeyboard: id) }
-        return levels
+        var off: [UInt64: Float] = [:]
+        for id in lit {
+            guard c.setBrightness(0, forKeyboard: id) else { continue }
+            off[id] = levels[id]
+            // Restoring needs it to read off: say so if it doesn't.
+            let back = c.brightness(forKeyboard: id)
+            if back > 0.001 { logLine("lid shut: the keyboard light was set to 0 but reads \(back)") }
+        }
+        if off.count < lit.count { logLine("lid shut: the keyboard light didn't switch off on \(lit.count - off.count) keyboard(s)") }
+        return off
     }
 
-    /// Put each saved level back, then forget them. Once only, even if a
-    /// keyboard says no: nothing tells a retry whether the owner has set the
-    /// light since, and a retry would override them. With a refusal (macOS
-    /// changed since the levels were saved) nothing is touched and the file stays.
+    /// Put saved levels back where backlightRestorePlan says: only on a
+    /// keyboard that still reads off (one lit since was set by its owner or by
+    /// macOS, and its entry goes). One that can't be read, or whose setter says
+    /// no, stays saved for evaluate's retry; the file goes only when nothing
+    /// is left. With a refusal (macOS changed since) nothing is touched.
     /// Returns how many keyboards took their level back.
     @discardableResult
     func restore(_ levels: [UInt64: Float]) -> Int {
-        guard refusal == nil, let c = client, !levels.isEmpty else { return 0 }
-        var failed = 0
-        for (id, level) in levels {
-            if !c.setBrightness(level, forKeyboard: id) { failed += 1 }
+        guard refusal == nil, let c = client else { return 0 }
+        guard !levels.isEmpty else { _ = save([:]); return 0 }
+        let listed = listedKeyboards(c)
+        let plan = backlightRestorePlan(saved: levels, listed: listed, builtIn: listed.first { c.isKeyboardBuiltIn($0) },
+                                        levelNow: { listed.contains($0) ? c.brightness(forKeyboard: $0) : nil })
+        var keep = plan.keep
+        var restored = 0
+        for (id, level) in plan.restore {
+            if c.setBrightness(level, forKeyboard: id) { restored += 1 } else { keep[id] = level }
         }
-        if failed > 0 { logLine("the keyboard light didn't take its level back on \(failed) keyboard(s), press the brightness key") }
-        _ = save([:])
-        return levels.count - failed
+        if !plan.drop.isEmpty { logLine("the keyboard light was changed while the lid was shut, left it as it is") }
+        if keep.isEmpty { keepLogged = false } else if !keepLogged {
+            keepLogged = true
+            logLine("couldn't put the keyboard light back on \(keep.count) keyboard(s) yet, trying again later")
+        }
+        _ = save(keep)
+        return restored
+    }
+
+    /// restore(_:) from keyboard-backlight.json; an unreadable file is left alone.
+    @discardableResult
+    func restoreSaved() -> Int {
+        guard let levels = savedLevels() else { return 0 }
+        return restore(levels)
     }
 }

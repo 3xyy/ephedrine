@@ -49,7 +49,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var lidPaused = false
     var lidHoldActive = false                       // the lid-shut hold is on (updateLidPause): muted, keys dark, paused
     var lidHoldGeneration = 0                       // bumped at each hold start and end (a Docker check from an older hold is dropped)
-    var dockerPaused = false                        // the Docker rule stopped Docker Desktop; its pids are in pausedProcesses
+    var dockerPausedProcesses: [PausedProcess] = [] // what the Docker rule stopped (also in pausedProcesses), roots first
+    var dockerPaused: Bool { !dockerPausedProcesses.isEmpty }
     var lastExtrasRetry = Date.distantPast          // last retry of outputs that weren't connected when the hold ended
     var lidLockedThisClose = false
     var lidFlipGeneration = 0                       // newest lid on/off request (stale completions are ignored)
@@ -241,7 +242,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         awake.apply(system: false, display: false)
         if awayMode || lidPaused || !pausedProcesses.isEmpty { resumeApps(); restoreBrightness() }   // never leave apps (or Docker) frozen
         clearAwayState()
-        restoreLidExtras()
+        restoreLidExtras(endingHold: true)   // and disarm the watchdog's unmute: a waiting device isn't its business
         releaseLidOnQuit()
         releaseLowPower("quitting")
         logLine("Ephedrine quit")
@@ -875,22 +876,51 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
                              alwaysPause: Set(settings.alwaysPause), selfPID: getpid(),
                              claudePIDs: claudePids(psLines: ps.split(separator: "\n").map(String.init)))
         for name in plan.keptForClaude { logLine("kept \(name) running: Claude Code runs under it") }
-        pausedProcesses = plan.processes.map { PausedProcess(pid: $0.pid, start: $0.start) }
-        // Written down (and the watchdog started) before the first stop, so a
-        // crash partway through still leaves every stopped pid in paused-pids.
-        guard persistAwayState() else { pausedProcesses.removeAll(); logLine("couldn't record what to pause, paused nothing"); return }
-        // Only what's still the same process: a pid that exited since the
-        // snapshot (ps ran in between) may belong to something else now.
+        let stopped = Set(stopRecorded(plan.processes.map { PausedProcess(pid: $0.pid, start: $0.start) }).map(\.pid))
+        pausedNames = plan.apps.filter { stopped.contains($0.pid) }.map(\.displayName)
+    }
+
+    /// SIGSTOP `entries` (each parent before its children) the safe way, for
+    /// suspendApps and the Docker rule alike. They join pausedProcesses and are
+    /// written to paused-pids (the watchdog started) before the first stop, so
+    /// a crash partway through still leaves every stopped pid recorded; no
+    /// record, no stop. Then only those still the same process in a fresh
+    /// snapshot are stopped (a pid that exited since may belong to something
+    /// else now), children first. Entries not stopped are taken out again.
+    /// Returns the stopped ones.
+    func stopRecorded(_ entries: [PausedProcess], logPrefix: String = "") -> [PausedProcess] {
+        guard !entries.isEmpty else { return [] }
+        func takeOut(_ gone: [PausedProcess]) {
+            guard !gone.isEmpty else { return }
+            pausedProcesses.removeAll { gone.contains($0) }
+            persistAwayState()
+        }
+        pausedProcesses += entries
+        guard persistAwayState() else { takeOut(entries); logLine(logPrefix + "couldn't record what to pause, paused nothing"); return [] }
         let now = processSnapshot()
-        if now.isEmpty { pausedProcesses.removeAll(); logLine("couldn't read the process list, paused nothing"); return }
-        pausedProcesses = pausedProcesses.filter { stillSame($0, in: now) }
+        if now.isEmpty { takeOut(entries); logLine(logPrefix + "couldn't read the process list, paused nothing"); return [] }
+        let live = entries.filter { stillSame($0, in: now) }
         var failed = Set<pid_t>()
-        for p in pausedProcesses.reversed() {   // helpers first, apps last
+        for p in live.reversed() {   // children first, parents last
             if kill(p.pid, SIGSTOP) != 0 { failed.insert(p.pid) }
         }
-        pausedProcesses.removeAll { failed.contains($0.pid) }   // gone already, or not ours
-        let stopped = Set(pausedProcesses.map(\.pid))
-        pausedNames = plan.apps.filter { stopped.contains($0.pid) }.map(\.displayName)
+        let stopped = live.filter { !failed.contains($0.pid) }   // the rest: gone already, or not ours
+        takeOut(entries.filter { !stopped.contains($0) })
+        return stopped
+    }
+
+    /// SIGCONT only what the Docker rule stopped, roots first, skipping pids
+    /// reused since; the apps the lid paused stay paused.
+    func resumeDocker(_ why: String) {
+        let entries = dockerPausedProcesses
+        let procs = processSnapshot()
+        if procs.isEmpty { logLine("couldn't read the process list, resuming every paused Docker pid") }
+        let live = toResume(entries, in: procs)
+        for p in live { kill(p.pid, SIGCONT) }
+        pausedProcesses.removeAll { entries.contains($0) }
+        dockerPausedProcesses.removeAll()
+        if pausedProcesses.isEmpty { clearAwayState() } else { persistAwayState() }
+        logLine("\(why), resumed Docker (\(live.count) processes)")
     }
     /// Names of what suspendApps last paused (for the log).
     var pausedList: String { pausedNames.isEmpty ? "" : " (" + pausedNames.joined(separator: ", ") + ")" }
@@ -909,7 +939,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
                 + " (\(live.count) processes" + (skipped > 0 ? ", skipped \(skipped) that exited" : "") + ")")
         pausedProcesses.removeAll()
         pausedNames.removeAll()
-        dockerPaused = false
+        dockerPausedProcesses.removeAll()
     }
 
     // ── Away crash-recovery: if we die while apps are SIGSTOPped / screen is
@@ -1160,7 +1190,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var heldState: (paused: Int, dockerPaused: Bool, muted: Bool, lowPower: Bool, lastGap: TimeInterval?) {
         // Ours and actually on: on the charger, the battery profile we set isn't the one in use.
         let lowPower = fm.fileExists(atPath: lowPowerMarkerPath) && ProcessInfo.processInfo.isLowPowerModeEnabled
-        return (pausedAppCount, dockerPaused, mutedOutputsPending(), lowPower, nil)
+        // "muted" while the hold has the default output muted, not while a gone device's entry waits.
+        return (pausedAppCount, dockerPaused, muteWatchdogArmed(), lowPower, nil)
     }
 
     /// Plain warning lines for the status card (no "⚠"; the card draws the triangle).

@@ -97,12 +97,12 @@ struct LidPane: View {
                         Tip("It comes back on at the same level when you open the lid.")
                     }
                     .disabled(KeyboardBacklight.shared.refusal != nil)
-                    if let why = KeyboardBacklight.shared.refusal {
-                        Tip("Not available on this version of macOS, so Ephedrine leaves the keyboard light alone (\(why)).")
+                    if KeyboardBacklight.shared.refusal != nil {   // why goes to the log, at each lid close
+                        Tip("Turning the keyboard light off isn't supported on this macOS version.")
                     }
                     Toggle(isOn: $settings.lidDockerRule) {
                         Text("Pause Docker while it's shut")
-                        Tip("Only when no container is running. Docker is asked twice, and if it doesn't answer it keeps running. It resumes when you open the lid.")
+                        Tip("Only when no container is running. Docker is asked twice, and if it doesn't answer it keeps running. It resumes when you open the lid. A docker command Claude starts after the lid shuts waits until you open it.")
                     }
                     Toggle(isOn: $settings.lowPowerOnLidShut) {
                         Text("Low Power Mode while the lid is shut")
