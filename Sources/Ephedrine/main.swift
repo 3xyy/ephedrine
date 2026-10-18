@@ -1024,7 +1024,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         menu.addItem(stayAwakeMenuItem())
         menu.addItem(.separator())
         let sw = SwitchRowView(title: "Keep awake while Claude works", isOn: settings.enabled,
-                               toolTip: settings.enabled ? nil : "Off, so macOS sleeps as usual") { [weak self] _ in self?.toggleEnabled() }
+                               toolTip: settings.enabled ? nil : "Off, so macOS sleeps as usual") { [weak self] on in self?.settings.enabled = on }
         let swItem = NSMenuItem()
         swItem.view = sw
         menu.addItem(swItem)

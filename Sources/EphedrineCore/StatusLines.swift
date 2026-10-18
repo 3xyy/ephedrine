@@ -39,7 +39,7 @@ public enum StatusLines {
                                   text: "\(p)%" + (charging && p < 100 ? " charging" : "")))
         }
         if let w = wifi {
-            out.append(StatusChip(kind: .wifi, text: w == "on" ? "Connected" : w))
+            out.append(StatusChip(kind: .wifi, text: w == "on" ? "On" : w))
         }
         return out
     }

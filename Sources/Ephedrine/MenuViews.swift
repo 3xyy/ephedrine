@@ -109,15 +109,20 @@ final class StatusCardView: NSView {
         }
 
         var first = true
+        let lineW = w - 2 * MenuMetrics.inset
         for n in status.notes {
             y += first ? 9 : 0; first = false
-            l.notes.append((NSRect(x: MenuMetrics.inset, y: y, width: w - 2 * MenuMetrics.inset, height: 16), n))
-            y += 16
+            let nh = max(16, wrappedHeight(attributed(n, Self.smallFont, .secondaryLabelColor), width: lineW))
+            l.notes.append((NSRect(x: MenuMetrics.inset, y: y, width: lineW, height: nh), n))
+            y += nh
         }
         for t in status.warnings {
             y += first ? 9 : 0; first = false
-            l.warnings.append((NSRect(x: MenuMetrics.inset, y: y, width: w - 2 * MenuMetrics.inset, height: 16), t))
-            y += 16
+            let iconW = symbol("exclamationmark.triangle.fill", size: 10, color: menuWarningColor)?.size.width ?? 0
+            let tw = lineW - iconW - 5
+            let wh = max(16, wrappedHeight(attributed(t, Self.smallFont, menuWarningColor), width: tw))
+            l.warnings.append((NSRect(x: MenuMetrics.inset, y: y, width: lineW, height: wh), t))
+            y += wh
         }
         l.height = y + 12
         return l
@@ -153,48 +158,81 @@ final class StatusCardView: NSView {
         }
 
         for (rect, text) in layout.notes {
-            let t = attributed(text, Self.smallFont, .secondaryLabelColor)
-            t.draw(at: NSPoint(x: rect.minX, y: rect.midY - t.size().height / 2))
+            attributed(text, Self.smallFont, .secondaryLabelColor).draw(with: rect, options: opts)
         }
         for (rect, text) in layout.warnings {
             var x = rect.minX
             if let icon = symbol("exclamationmark.triangle.fill", size: 10, color: menuWarningColor) {
-                let r = NSRect(x: x, y: rect.midY - icon.size.height / 2, width: icon.size.width, height: icon.size.height)
+                // aligned with the first text line (16 pt tall)
+                let r = NSRect(x: x, y: rect.minY + (16 - icon.size.height) / 2, width: icon.size.width, height: icon.size.height)
                 icon.draw(in: r, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
                 x += icon.size.width + 5
             }
-            let t = attributed(text, Self.smallFont, menuWarningColor)
-            t.draw(at: NSPoint(x: x, y: rect.midY - t.size().height / 2))
+            attributed(text, Self.smallFont, menuWarningColor)
+                .draw(with: NSRect(x: x, y: rect.minY, width: rect.maxX - x, height: rect.height), options: opts)
         }
     }
 }
 
-/// "Keep awake while Claude works": a title and a switch in one menu row.
+/// "Keep awake while Claude works": a title and a switch in one menu row. The
+/// switch is drawn by hand because the menu window is never key, which turns a
+/// real NSSwitch grey even when it's on. The whole row is the click target.
 final class SwitchRowView: NSView {
-    private let toggle = NSSwitch()
+    private var isOn: Bool
+    private let title: String
     private let onToggle: (Bool) -> Void
+    private var hovered = false
 
     init(title: String, isOn: Bool, toolTip: String?, onToggle: @escaping (Bool) -> Void) {
-        self.onToggle = onToggle
+        self.title = title; self.isOn = isOn; self.onToggle = onToggle
         super.init(frame: NSRect(x: 0, y: 0, width: MenuMetrics.width, height: 26))
-        let label = NSTextField(labelWithString: title)
-        label.font = NSFont.menuFont(ofSize: 0)
-        label.sizeToFit()
-        label.setFrameOrigin(NSPoint(x: MenuMetrics.inset, y: (26 - label.frame.height) / 2))
-        addSubview(label)
-
-        toggle.controlSize = .mini
-        toggle.state = isOn ? .on : .off
-        toggle.target = self
-        toggle.action = #selector(flipped)
-        toggle.setAccessibilityLabel(title)
-        toggle.sizeToFit()
-        toggle.setFrameOrigin(NSPoint(x: MenuMetrics.width - MenuMetrics.inset - toggle.frame.width,
-                                      y: (26 - toggle.frame.height) / 2))
-        addSubview(toggle)
         self.toolTip = toolTip
+        setAccessibilityRole(.checkBox)
+        setAccessibilityLabel(title)
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    @objc private func flipped() { onToggle(toggle.state == .on) }
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        if hovered {
+            NSColor.selectedContentBackgroundColor.withAlphaComponent(0.18).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 5, dy: 1), xRadius: 5, yRadius: 5).fill()
+        }
+        let t = NSAttributedString(string: title, attributes: [.font: NSFont.menuFont(ofSize: 0), .foregroundColor: NSColor.labelColor])
+        t.draw(at: NSPoint(x: MenuMetrics.inset, y: (bounds.height - t.size().height) / 2))
+
+        let pill = NSRect(x: bounds.width - MenuMetrics.inset - 26, y: (bounds.height - 15) / 2, width: 26, height: 15)
+        (isOn ? NSColor.controlAccentColor : NSColor.labelColor.withAlphaComponent(0.2)).setFill()
+        NSBezierPath(roundedRect: pill, xRadius: 7.5, yRadius: 7.5).fill()
+        let kx = isOn ? pill.maxX - 14 : pill.minX + 1
+        let knob = NSRect(x: kx, y: pill.minY + 1, width: 13, height: 13)
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.3)
+        shadow.shadowBlurRadius = 1.5
+        shadow.shadowOffset = NSSize(width: 0, height: -0.5)
+        shadow.set()
+        NSColor.white.setFill()
+        NSBezierPath(ovalIn: knob).fill()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private func flip() {
+        isOn.toggle()
+        needsDisplay = true
+        onToggle(isOn)
+    }
+
+    override func accessibilityValue() -> Any? { isOn ? 1 : 0 }
+    override func accessibilityPerformPress() -> Bool { flip(); return true }
+    override func mouseUp(with e: NSEvent) { flip() }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
+    }
+    override func mouseEntered(with e: NSEvent) { hovered = true; needsDisplay = true }
+    override func mouseExited(with e: NSEvent) { hovered = false; needsDisplay = true }
 }

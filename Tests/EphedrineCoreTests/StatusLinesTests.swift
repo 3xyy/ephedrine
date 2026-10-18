@@ -9,7 +9,7 @@ import Testing
 @Test func chipsOmitUnknown() {
     #expect(StatusLines.chips(lid: .none, watts: nil, batteryPercent: nil, charging: false, wifi: nil).isEmpty)
     #expect(StatusLines.chips(lid: .shut, watts: 0.01, batteryPercent: 82, charging: true, wifi: "on").map(\.text)
-            == ["Lid shut", "82% charging", "Connected"])
+            == ["Lid shut", "82% charging", "On"])
     #expect(StatusLines.chips(lid: .none, watts: nil, batteryPercent: 100, charging: true, wifi: nil).map(\.text) == ["100%"])
 }
 @Test func heldLine() {
