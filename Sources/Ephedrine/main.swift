@@ -128,6 +128,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var awayTimer: Timer?
     var idleSince = Date()
     var keepAwakeUntil: Date?          // timed "keep awake for N"
+    let durationPanel = DurationPanelController()
     var pendingSleepAt: Date?          // set when the 10s pre-sleep warning is showing
     var warnedNoNotifications = false
 
@@ -281,6 +282,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
         if let until = keepAwakeUntil, Date() >= until {
             keepAwakeUntil = nil; logLine("timed keep-awake expired")
+            stayOverNotify()
         }
 
         // 2026-10-13: "I'm leaving" held the Mac awake on battery from 80% at
@@ -377,7 +379,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
         var title = ""
         if manualActive, !busy, let until = keepAwakeUntil {
-            title = fmtCountdown(Int(until.timeIntervalSinceNow))
+            title = fmtRemaining(Int(until.timeIntervalSinceNow))
         }
 
         // A one-off lid-closed session is an explicit "don't sleep", like a manual override.
@@ -790,6 +792,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ka_battery", content: c, trigger: nil))
     }
 
+    func stayOverNotify() {
+        let c = UNMutableNotificationContent()
+        c.title = "Stay awake is over"
+        c.body = "Ephedrine is back to keeping the Mac awake only while Claude works."
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ka_stay_over", content: c, trigger: nil))
+    }
+
     func awayNotify(_ t: String, _ b: String) {
         let c = UNMutableNotificationContent(); c.title = t; c.body = b
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ka_away", content: c, trigger: nil))
@@ -1053,10 +1062,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
     private func stayAwakeMenuItem() -> NSMenuItem {
         let sub = NSMenu()
-        for (title, mins) in [("For 30 minutes", 30), ("For 1 hour", 60), ("For 2 hours", 120), ("Until I turn it off", 0)] {
-            let it = item(title, #selector(stayAwakeChosen(_:)), on: mins == 0 && manualKeepAwake)
+        for (title, mins) in [("For 30 minutes", 30), ("For 1 hour", 60), ("For 2 hours", 120)] {
+            let it = item(title, #selector(stayAwakeChosen(_:)))
             it.tag = mins
             sub.addItem(it)
+        }
+        sub.addItem(item("Custom…", #selector(stayAwakeCustomChosen)))
+        let forever = item("Until I turn it off", #selector(stayAwakeChosen(_:)), on: manualKeepAwake)
+        forever.tag = 0
+        sub.addItem(forever)
+        if keepAwakeUntil != nil {
+            sub.addItem(.separator())
+            for (title, mins) in [("Add 30 minutes", 30), ("Add 1 hour", 60)] {
+                let it = item(title, #selector(addStayAwakeChosen(_:)))
+                it.tag = mins
+                sub.addItem(it)
+            }
+            sub.addItem(item("Add time…", #selector(addStayAwakeCustomChosen)))
         }
         if manualKeepAwake || keepAwakeUntil != nil {
             sub.addItem(.separator())
@@ -1122,13 +1144,33 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         if lidSetupOK { lidState.session = .indefinite; lidState.tripped = nil }
         logLine("stay awake until turned off" + (lidSetupOK ? ", lid can be shut" : "")); evaluate()
     }
-    func stayAwake(minutes: Int) {
+    func stayAwake(minutes: Int) { stayAwake(seconds: TimeInterval(minutes * 60)) }
+    func stayAwake(seconds: TimeInterval) {
         manualKeepAwake = false
-        let until = Date().addingTimeInterval(TimeInterval(minutes * 60))
+        let until = Date().addingTimeInterval(seconds)
         keepAwakeUntil = until
         if lidSetupOK { lidState.session = .until(until); lidState.tripped = nil }
-        logLine("keep awake for \(minutes) min" + (lidSetupOK ? ", lid can be shut" : "")); evaluate()
+        logLine("keep awake for \(fmtDuration(Int(seconds)))" + (lidSetupOK ? ", lid can be shut" : "")); evaluate()
     }
+    func addStayAwake(seconds: TimeInterval) {
+        guard let current = keepAwakeUntil else { return }
+        let until = extendedUntil(current, by: seconds, now: Date())
+        keepAwakeUntil = until
+        if lidSetupOK { lidState.session = .until(until) }
+        logLine("keep awake extended to \(clockStr(until))"); evaluate()
+    }
+    /// Opens the duration panel under the status item. Called from the menu
+    /// (which has closed by the time its action runs) and from Settings.
+    func showDurationPanel(_ mode: DurationPanelController.Mode, onSubmit: @escaping (TimeInterval) -> Void) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, let btn = self.statusItem.button else { return }
+            self.durationPanel.show(below: btn, mode: mode, onSubmit: onSubmit)
+        }
+    }
+    func startStayAwakeCustom() { showDurationPanel(.start) { [weak self] in self?.stayAwake(seconds: $0) } }
+    @objc func stayAwakeCustomChosen() { startStayAwakeCustom() }
+    @objc func addStayAwakeCustomChosen() { showDurationPanel(.add) { [weak self] in self?.addStayAwake(seconds: $0) } }
+    @objc func addStayAwakeChosen(_ sender: NSMenuItem) { addStayAwake(seconds: TimeInterval(sender.tag * 60)) }
     func stopStayAwake() {
         manualKeepAwake = false; keepAwakeUntil = nil; lidState.session = nil
         logLine("stay awake turned off"); evaluate()

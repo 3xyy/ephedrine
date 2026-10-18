@@ -8,7 +8,7 @@ struct NowPane: View {
     let controller: AppController
     let now: Date
 
-    enum Stay: Hashable { case off, indefinite, running, minutes(Int) }
+    enum Stay: Hashable { case off, indefinite, running, custom, minutes(Int) }
 
     var body: some View {
         Section {
@@ -27,6 +27,7 @@ struct NowPane: View {
                     Text("For 30 minutes").tag(Stay.minutes(30))
                     Text("For 1 hour").tag(Stay.minutes(60))
                     Text("For 2 hours").tag(Stay.minutes(120))
+                    Text("Custom…").tag(Stay.custom)
                     Text("Until I turn it off").tag(Stay.indefinite)
                     if let until = controller.keepAwakeUntil {
                         Text("\(fmtDuration(Int(until.timeIntervalSinceNow))) left").tag(Stay.running)
@@ -49,6 +50,7 @@ struct NowPane: View {
         case .off: controller.stopStayAwake()
         case .indefinite: controller.stayAwakeIndefinitely()
         case .minutes(let m): controller.stayAwake(minutes: m)
+        case .custom: controller.startStayAwakeCustom()
         case .running: break
         }
     }
