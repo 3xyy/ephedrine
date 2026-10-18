@@ -85,6 +85,10 @@ extension AppController {
     func restoreAppNapOverride() {
         guard case .journal(var journal) = readAppNapJournal() else { return }
         var restored: [String] = []
+        for id in journal.unrestorable {   // never written to; just forgotten
+            logLine("App Nap: dropping \(id) from the journal, not a bundle id")
+            journal.prior[id] = nil
+        }
         for (id, prior) in journal.restorePlan() {
             let value: Bool?
             switch prior { case .absent: value = nil; case .value(let b): value = b }

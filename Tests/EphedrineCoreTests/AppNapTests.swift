@@ -32,7 +32,21 @@ import Foundation
     var j = AppNapJournal(prior: ["a.b": .absent])
     #expect(j.plan(current: ["a.b": true, "x.y": nil]) == ["x.y"])    // a.b stays journaled, not rewritten
     #expect(j.prior == ["a.b": .absent, "x.y": .absent])
-    #expect(j.plan(current: ["x.y": nil]) == [])
+    #expect(j.plan(current: ["x.y": nil]) == ["x.y"])   // journaled but not YES (a write failed): try again, same prior
+    #expect(j.prior["x.y"] == .absent)
+    #expect(j.plan(current: ["x.y": true]) == [])
+}
+@Test func appNapRetryKeepsFirstPrior() {
+    var j = AppNapJournal(prior: ["a.b": .value(false)])
+    #expect(j.plan(current: ["a.b": nil]) == ["a.b"])
+    #expect(j.prior["a.b"] == .value(false))
+}
+@Test func appNapRestoreSkipsUnsafeIds() {
+    #expect(!appNapRestorable("kCFPreferencesAnyApplication"))
+    let j = AppNapJournal(prior: ["NSGlobalDomain": .absent, "/tmp/x": .value(false), "kCFPreferencesAnyApplication": .absent,
+                                  "com.old.app": .value(false), "a.b": .absent])
+    #expect(j.restorePlan().map(\.0) == ["a.b", "com.old.app"])      // an id outside appNapAgentApps still restores
+    #expect(j.unrestorable == ["NSGlobalDomain", "/tmp/x", "kCFPreferencesAnyApplication"].sorted())
 }
 @Test func appNapRestorePlanIsSortedWithValues() {
     let ids = (0..<30).map { "app.n\(String(format: "%02d", $0))" }

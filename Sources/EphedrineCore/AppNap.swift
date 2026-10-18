@@ -18,9 +18,9 @@ public let appNapAgentApps: [String] = [
 
 /// A bundle id that is safe to hand to the preferences calls: ASCII letters,
 /// digits, `.`, `-` and `_`, starting with a letter or digit, and not the
-/// global domain.
+/// global domain or one of CFPreferences' own names (kCFPreferencesAnyApplication...).
 public func appNapRestorable(_ bundleID: String) -> Bool {
-    guard bundleID != "NSGlobalDomain", let first = bundleID.unicodeScalars.first,
+    guard bundleID != "NSGlobalDomain", !bundleID.hasPrefix("kCFPreferences"), let first = bundleID.unicodeScalars.first,
           first.isASCII, CharacterSet.alphanumerics.contains(first) else { return false }
     return bundleID.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || "._-".unicodeScalars.contains($0)) }
 }
@@ -33,21 +33,27 @@ public struct AppNapJournal: Codable, Equatable {
     public var prior: [String: PriorValue]
     public init(prior: [String: PriorValue]) { self.prior = prior }
 
-    /// The ids to write YES to: restorable, not already YES, not already
-    /// journaled. Records each one's value (nil = no key) as it goes; an id
-    /// that's journaled keeps its first prior value. Sorted.
+    /// The ids to write YES to: restorable and not already YES. A journaled id
+    /// not at YES is included again (an earlier write may have failed) and keeps
+    /// its first prior value; a new one records its value (nil = no key). Sorted.
     public mutating func plan(current: [String: Bool?]) -> [String] {
         var out: [String] = []
-        for id in current.keys.sorted() where appNapRestorable(id) && prior[id] == nil {
+        for id in current.keys.sorted() where appNapRestorable(id) {
             let now = current[id] ?? nil
             if now == true { continue }
-            prior[id] = now.map { .value($0) } ?? .absent
+            if prior[id] == nil { prior[id] = now.map { .value($0) } ?? .absent }
             out.append(id)
         }
         return out
     }
 
+    /// The entries to put back, sorted by id. Not every journaled id: a corrupt
+    /// or hand-edited file could name NSGlobalDomain or a path, which are never
+    /// written (see `unrestorable`). An id no longer in appNapAgentApps still counts.
     public func restorePlan() -> [(String, PriorValue)] {
-        prior.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
+        prior.sorted { $0.key < $1.key }.filter { appNapRestorable($0.key) }.map { ($0.key, $0.value) }
     }
+
+    /// Journaled ids that must be dropped without a write, sorted.
+    public var unrestorable: [String] { prior.keys.filter { !appNapRestorable($0) }.sorted() }
 }
