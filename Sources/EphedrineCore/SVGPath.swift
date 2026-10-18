@@ -47,6 +47,7 @@ public func parseSVGPath(_ d: String) -> [PathOp]? {
     var ops: [PathOp] = []
     var cur = CGPoint.zero, start = CGPoint.zero
     var cmd: UInt8 = 0
+    var closed = false   // after z, a drawing command restarts from the subpath start
     skipSep()
     guard i < s.count else { return nil }
     while true {
@@ -59,12 +60,14 @@ public func parseSVGPath(_ d: String) -> [PathOp]? {
             cmd = c
             i += 1
             if c == 90 || c == 122 {
-                ops.append(.close); cur = start
+                ops.append(.close); cur = start; closed = true
                 continue
             }
         } else if cmd == 0 || cmd == 90 || cmd == 122 {
             return nil
         }
+        if closed && cmd != 77 && cmd != 109 { ops.append(.move(start)); cur = start }
+        closed = false
         let rel = cmd >= 97
         let ox = rel ? cur.x : 0, oy = rel ? cur.y : 0
         switch cmd {

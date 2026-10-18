@@ -48,3 +48,21 @@ private func same(_ a: [PathOp]?, _ b: [PathOp]) -> Bool {
     #expect(pts.count > 100)
     #expect(pts.allSatisfy { $0.x >= -0.01 && $0.x <= 24.01 && $0.y >= -0.01 && $0.y <= 24.01 })
 }
+
+@Test func drawingAfterCloseRestartsFromSubpathStart() {
+    #expect(same(parseSVGPath("M0 0L1 0Z L2 2"), [
+        .move(CGPoint(x: 0, y: 0)), .line(CGPoint(x: 1, y: 0)), .close,
+        .move(CGPoint(x: 0, y: 0)), .line(CGPoint(x: 2, y: 2))]))
+    #expect(same(parseSVGPath("M1 1L2 1zm1 1l1 0"), [
+        .move(CGPoint(x: 1, y: 1)), .line(CGPoint(x: 2, y: 1)), .close,
+        .move(CGPoint(x: 2, y: 2)), .line(CGPoint(x: 3, y: 2))]))
+}
+@Test func relativeQuadAndCommas() {
+    #expect(same(parseSVGPath("M1 1q1 0 1 1"), [
+        .move(CGPoint(x: 1, y: 1)), .quad(CGPoint(x: 2, y: 1), CGPoint(x: 2, y: 2))]))
+    #expect(same(parseSVGPath("M0,0L1,1"), [.move(CGPoint(x: 0, y: 0)), .line(CGPoint(x: 1, y: 1))]))
+}
+@Test func rejectsHalfFinishedCommand() {
+    #expect(parseSVGPath("M0 0 L1") == nil)
+    #expect(parseSVGPath("M0 0 C1 1 2 2 3") == nil)
+}
