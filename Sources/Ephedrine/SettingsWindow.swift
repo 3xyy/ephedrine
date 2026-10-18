@@ -38,6 +38,7 @@ final class SettingsUI: ObservableObject {
     @Published var loginChanged = 0           // bumped after a toggle so it redraws right away
     @Published var notifications = "Checking…"
     @Published var cmuxPassword = ""          // typed in Claude Code › cmux, cleared once saved to the keychain
+    @Published var tmuxTarget = ""            // typed in Claude Code › tmux panes, cleared once added
 }
 
 /// One window, created on first use and reused.
@@ -243,6 +244,29 @@ struct ClaudePane: View {
                 .pickerStyle(.radioGroup)
                 .labelsHidden()
                 Tip(settings.autoContinueMode.tip + " Types “continue” only when Claude Code's own screen is showing, so a plain shell is never typed into. Terminal.app, and cmux once connected.")
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("After a network outage, type continue in these tmux panes")
+                    ForEach(settings.tmuxTargets, id: \.self) { target in
+                        HStack {
+                            Text(target)
+                            Spacer()
+                            Button("Remove") { settings.tmuxTargets.removeAll { $0 == target } }
+                        }
+                    }
+                    HStack {
+                        TextField("Pane, like %3 or work:1.0", text: $ui.tmuxTarget)
+                            .onSubmit(addTmuxTarget)
+                        Button("Add", action: addTmuxTarget)
+                    }
+                    Text(tmuxMarkCommand(ui.tmuxTarget.trimmingCharacters(in: .whitespaces).isEmpty ? "<pane>" : ui.tmuxTarget.trimmingCharacters(in: .whitespaces)))
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                    Tip("Only after an outage of \(Int(settings.outageNudgeSeconds)) seconds or more, and only in a pane you mark by running the command above in tmux. Dead panes, copy mode and panes with input off are skipped.")
+                }
+                Toggle(isOn: $settings.tmuxPressEnter) {
+                    Text("Press Enter after typing")
+                    Tip("Enter also sends anything already typed in that pane.")
+                }
             }
             Section("cmux") {
                 LabeledContent("Status", value: controller.cmuxStatus)
@@ -268,6 +292,11 @@ struct ClaudePane: View {
                 Tip("Get a notification when any limit (session, weekly, or per-model) reaches this level.")
             }
         }
+    }
+
+    private func addTmuxTarget() {
+        settings.addTmuxTarget(ui.tmuxTarget)
+        ui.tmuxTarget = ""
     }
 
     private func saveCmuxPassword() {

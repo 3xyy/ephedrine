@@ -50,6 +50,12 @@ public final class AppSettings: ObservableObject {
     @Published public var awayKeepRunning: [String] { didSet { save(awayKeepRunning, "awayKeepRunning") } }
     /// Apps "I'm leaving" and the lid pause stop even if they're on a keep-running list (bundle ids).
     @Published public var alwaysPause: [String] { didSet { save(alwaysPause, "alwaysPause") } }
+    /// tmux panes (any `-t` target) to type "continue" into after a network outage. Each pane must also carry the mark.
+    @Published public var tmuxTargets: [String] { didSet { save(tmuxTargets, "tmuxTargets") } }
+    /// Press Enter after typing in those panes.
+    @Published public var tmuxPressEnter: Bool { didSet { save(tmuxPressEnter, "tmuxPressEnter") } }
+    /// An outage at least this long (seconds) triggers the tmux nudge when the network returns.
+    @Published public var outageNudgeSeconds: Double { didSet { save(outageNudgeSeconds, "outageNudgeSeconds") } }
 
     public init(defaults: UserDefaults) {
         self.defaults = defaults
@@ -88,6 +94,10 @@ public final class AppSettings: ObservableObject {
         awayKeepRunning = (defaults.stringArray(forKey: "awayKeepRunning") ?? []).filter { seen.insert($0).inserted }
         var seenPause = Set<String>()
         alwaysPause = (defaults.stringArray(forKey: "alwaysPause") ?? []).filter { seenPause.insert($0).inserted }
+        var seenTmux = Set<String>()
+        tmuxTargets = (defaults.stringArray(forKey: "tmuxTargets") ?? []).filter { seenTmux.insert($0).inserted }
+        tmuxPressEnter = bool("tmuxPressEnter", false)
+        outageNudgeSeconds = defaults.object(forKey: "outageNudgeSeconds") as? Double ?? 90
     }
 
     public func addKeepRunning(_ bundleID: String) {
@@ -98,6 +108,12 @@ public final class AppSettings: ObservableObject {
     public func addAlwaysPause(_ bundleID: String) {
         guard !bundleID.isEmpty, !alwaysPause.contains(bundleID) else { return }
         alwaysPause.append(bundleID)
+    }
+
+    public func addTmuxTarget(_ target: String) {
+        let t = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, !tmuxTargets.contains(t) else { return }
+        tmuxTargets.append(t)
     }
 
     private func save(_ value: Any, _ key: String) {

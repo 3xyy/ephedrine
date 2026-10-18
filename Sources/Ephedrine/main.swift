@@ -113,6 +113,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     let wakeGate = WakeGate()              // the two above, for the scan queue's last check before typing
     let postWakeQuiet: TimeInterval = 60   // let the network come back before typing
     let continueQueue = DispatchQueue(label: "ephedrine.autocontinue")
+    let networkWatch = NetworkWatch()
+    var outage = OutageTracker()           // main thread
 
     /// Settings snapshot handed to the background terminal scan, so the scan
     /// never reads main-thread-mutated properties across threads.
@@ -232,6 +234,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         RunLoop.main.add(t, forMode: .common)
         tick = t
         logLine("Ephedrine started")
+        networkWatch.onChange = { [weak self] ok in self?.networkChanged(ok) }
+        networkWatch.start()
         refreshDisplaySleepIfStale()
         setupWindow.onClose = { [weak self] in self?.settings.setupDone = true }
         if settings.setupDone { fetchUsage() } else { openSetup() }
@@ -541,6 +545,19 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         // is on screen. Stale text would otherwise hold the Mac awake for days.
         let resumeAts = limitEpisodes.values.compactMap(\.resumeAt)
         DispatchQueue.main.async { [weak self] in self?.limitResumeAts = resumeAts }
+    }
+
+    /// A network path update (main thread). After an outage of `outageNudgeSeconds`
+    /// or more, types "continue" into the tmux panes the owner marked, if the Mac
+    /// is fully awake and past the post-wake quiet.
+    func networkChanged(_ ok: Bool) {
+        let wasDown = outage.downSince != nil
+        let gap = outage.step(satisfied: ok, now: Date())
+        if !ok { if !wasDown { logLine("network down") }; return }
+        guard let gap else { return }
+        logLine("network back after \(Int(gap.rounded()))s")
+        guard gap >= settings.outageNudgeSeconds, !settings.tmuxTargets.isEmpty, fullyAwake else { return }
+        nudgeTmux(targets: settings.tmuxTargets, pressEnter: settings.tmuxPressEnter, canTypeNow: canTypeNow)
     }
 
     /// Right before typing, not the scan's start-time copy (continueQueue).
@@ -1191,7 +1208,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         // Ours and actually on: on the charger, the battery profile we set isn't the one in use.
         let lowPower = fm.fileExists(atPath: lowPowerMarkerPath) && ProcessInfo.processInfo.isLowPowerModeEnabled
         // "muted" while the hold has the default output muted, not while a gone device's entry waits.
-        return (pausedAppCount, dockerPaused, muteWatchdogArmed(), lowPower, nil)
+        return (pausedAppCount, dockerPaused, muteWatchdogArmed(), lowPower, outage.lastGap)
     }
 
     /// Plain warning lines for the status card (no "⚠"; the card draws the triangle).
