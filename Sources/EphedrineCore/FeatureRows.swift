@@ -13,7 +13,7 @@ public struct FeatureRow: Equatable {
     }
 }
 
-public enum CmuxRowState: Equatable { case notInstalled, notRunning, noPassword, badPassword, failed, connected(Int) }
+public enum CmuxRowState: Equatable { case notInstalled, notRunning, noPassword, unreadablePassword, checking, badPassword, failed, connected(Int) }
 
 public struct FeatureSnapshot {
     public var lidSetup: Bool, lidHolding: Bool, lidClosed: Bool, claudeWorking: Bool, stayAwake: Bool
@@ -96,6 +96,8 @@ public enum FeatureRows {
         case .notInstalled: break
         case .notRunning: add(.cmux, "cmux", "Not running", .dim)
         case .noPassword: add(.cmux, "cmux", "Add its password in Settings to connect", .dim)
+        case .unreadablePassword: add(.cmux, "cmux", "Saved password can't be read", .warn)
+        case .checking: add(.cmux, "cmux", "Checking…", .dim)
         case .badPassword: add(.cmux, "cmux", "Password not accepted", .warn)
         case .failed: add(.cmux, "cmux", "Not connected", .dim)
         case .connected(let n):

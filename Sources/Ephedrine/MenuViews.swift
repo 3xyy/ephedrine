@@ -26,7 +26,7 @@ final class StatusCardView: NSView {
         var detail: NSRect?
         var chips: [(rect: NSRect, chip: StatusChip)] = []
         var block = NSRect.zero                       // the always-on feature rows (empty when none)
-        var rows: [(rect: NSRect, row: FeatureRow)] = []
+        var rows: [(rect: NSRect, row: FeatureRow, text: NSRect)] = []   // text: where the wrapped text goes
         var hint: (rect: NSRect, text: String)?
         var notes: [(rect: NSRect, text: String)] = []
         var warnings: [(rect: NSRect, text: String)] = []
@@ -43,7 +43,7 @@ final class StatusCardView: NSView {
     private static let rowFont = NSFont.systemFont(ofSize: 11.5)
     private static let rowH: CGFloat = 24
     private static let blockPad: CGFloat = 4
-    private static let rowIconX: CGFloat = 9, rowLabelX: CGFloat = 31, rowTextX: CGFloat = 109
+    private static let rowIconX: CGFloat = 9, rowLabelX: CGFloat = 31, rowGap: CGFloat = 8, rowLine: CGFloat = 15
 
     init(status: MenuStatus, glyph: NSImage, tint: NSColor) {
         self.status = status; self.glyph = glyph; self.tint = tint
@@ -150,13 +150,22 @@ final class StatusCardView: NSView {
         let lineW = w - 2 * MenuMetrics.inset
         if !status.features.isEmpty {
             y += 10
-            let bh = Self.blockPad * 2 + Self.rowH * CGFloat(status.features.count)
-            l.block = NSRect(x: MenuMetrics.inset, y: y, width: lineW, height: bh)
+            // The text column starts after the widest label; long text wraps, never truncates.
+            let labelW = status.features.map { ceil(attributed($0.label, Self.rowFont, .secondaryLabelColor).size().width) }.max() ?? 0
+            let colX = Self.rowLabelX + labelW + Self.rowGap
             var ry = y + Self.blockPad
             for r in status.features {
-                l.rows.append((NSRect(x: MenuMetrics.inset, y: ry, width: lineW, height: Self.rowH), r))
-                ry += Self.rowH
+                let dot: CGFloat = r.tone == .ok ? 11 : 0
+                let tw = lineW - Self.rowIconX - colX - dot
+                let th = wrappedHeight(attributed(r.text, Self.rowFont, .labelColor), width: tw)
+                let rh = max(Self.rowH, th + (Self.rowH - Self.rowLine))
+                let rect = NSRect(x: MenuMetrics.inset, y: ry, width: lineW, height: rh)
+                let textTop = ry + (Self.rowH - Self.rowLine) / 2
+                l.rows.append((rect, r, NSRect(x: MenuMetrics.inset + colX + dot, y: textTop, width: tw, height: th)))
+                ry += rh
             }
+            let bh = ry + Self.blockPad - y
+            l.block = NSRect(x: MenuMetrics.inset, y: y, width: lineW, height: bh)
             y += bh
             if let hint = status.hint {
                 y += 8
@@ -218,26 +227,19 @@ final class StatusCardView: NSView {
             NSColor.labelColor.withAlphaComponent(0.07).setFill()
             NSBezierPath(roundedRect: layout.block, xRadius: 8, yRadius: 8).fill()
         }
-        for (rect, row) in layout.rows {
+        for (rect, row, textRect) in layout.rows {
+            let mid = rect.minY + Self.rowH / 2   // the first line's middle: icon, label and dot sit there
             if let icon = symbol(Self.rowSymbol(row.kind), size: 13, color: Self.rowIconColor(row.tone)) {
-                let r = NSRect(x: rect.minX + Self.rowIconX, y: rect.midY - icon.size.height / 2, width: icon.size.width, height: icon.size.height)
+                let r = NSRect(x: rect.minX + Self.rowIconX, y: mid - icon.size.height / 2, width: icon.size.width, height: icon.size.height)
                 icon.draw(in: r, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
             }
             let label = attributed(row.label, Self.rowFont, .secondaryLabelColor)
-            label.draw(at: NSPoint(x: rect.minX + Self.rowLabelX, y: rect.midY - label.size().height / 2))
-            var tx = rect.minX + Self.rowTextX
+            label.draw(at: NSPoint(x: rect.minX + Self.rowLabelX, y: mid - label.size().height / 2))
             if row.tone == .ok {
                 NSColor.systemGreen.setFill()
-                NSBezierPath(ovalIn: NSRect(x: tx, y: rect.midY - 3, width: 6, height: 6)).fill()
-                tx += 11
+                NSBezierPath(ovalIn: NSRect(x: textRect.minX - 11, y: mid - 3, width: 6, height: 6)).fill()
             }
-            let para = NSMutableParagraphStyle()
-            para.lineBreakMode = .byTruncatingTail
-            let t = NSAttributedString(string: row.text, attributes: [
-                .font: Self.rowFont, .foregroundColor: Self.rowTextColor(row.tone), .paragraphStyle: para])
-            let th = ceil(t.size().height)
-            t.draw(with: NSRect(x: tx, y: rect.midY - th / 2, width: max(0, rect.maxX - Self.rowIconX - tx), height: th),
-                   options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+            attributed(row.text, Self.rowFont, Self.rowTextColor(row.tone)).draw(with: textRect, options: opts)
         }
         if let (rect, text) = layout.hint {
             attributed(text, Self.smallFont, .secondaryLabelColor).draw(with: rect, options: opts)

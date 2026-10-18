@@ -56,6 +56,8 @@ private func isRow(_ k: FeatureKind, _ text: String, _ tone: RowTone, _ f: (inou
     #expect(isRow(.cmux, "Add its password in Settings to connect", .dim) { $0.cmux = .noPassword })
     #expect(isRow(.cmux, "Password not accepted", .warn) { $0.cmux = .badPassword })
     #expect(isRow(.cmux, "Not connected", .dim) { $0.cmux = .failed })
+    #expect(isRow(.cmux, "Saved password can't be read", .warn) { $0.cmux = .unreadablePassword })
+    #expect(isRow(.cmux, "Checking…", .dim) { $0.cmux = .checking })
     #expect(isRow(.cmux, "Connected, 5 panes", .ok) { $0.cmux = .connected(5) })
     #expect(isRow(.cmux, "Connected, 1 pane", .ok) { $0.cmux = .connected(1) })
     #expect(isRow(.cmux, "Watching 5 panes", .ok) { $0.cmux = .connected(5); $0.claudeWorking = true })

@@ -1302,18 +1302,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let cmuxState: CmuxRowState
         if !cmuxSeen.installed { cmuxState = .notInstalled }
         else if runningCmuxCLI() == nil { cmuxState = .notRunning }
+        else if case .unreadable = cmuxSeen.password { cmuxState = .unreadablePassword }
         else if case .saved = cmuxSeen.password {
             switch cmuxSeen.access {
+            case nil: cmuxState = .checking
             case .ok?: cmuxState = .connected(cmuxSeen.panes)
             case .badPassword?: cmuxState = .badPassword
             case .needsPassword?: cmuxState = .noPassword
-            default: cmuxState = .failed   // not answered yet, denied, failed, gone
+            default: cmuxState = .failed   // denied, failed, gone
             }
         } else { cmuxState = .noPassword }
         let ssid = hotspotName
         return FeatureSnapshot(
             lidSetup: lidSetupOK, lidHolding: marker, lidClosed: closed && externalDisplayActive(),
-            claudeWorking: claudeWorkingCached, stayAwake: manualKeepAwake || keepAwakeUntil != nil,
+            claudeWorking: settings.keepAwakeClaudeWorking && claudeWorkingCached, stayAwake: manualKeepAwake || keepAwakeUntil != nil,
             lowPowerNeedsRerun: lowPowerSetupNeeded, lowPowerOn: cause,
             lowPowerOnLidShut: settings.lowPowerOnLidShut, lowPowerFloor: settings.lowPowerFloor,
             muteOnShut: settings.lidMute, keyboardOffOnShut: settings.lidKeyboardOff,
