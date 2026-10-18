@@ -1,9 +1,7 @@
 import Foundation
 
-public enum LidChip: Equatable { case none, shut, canClose }
-
 public struct StatusChip: Equatable {
-    public enum Kind: Equatable { case lid, power, battery(level: Int, charging: Bool), wifi }
+    public enum Kind: Equatable { case power, battery(level: Int, charging: Bool), wifi }
     public let kind: Kind
     public let text: String
     public init(kind: Kind, text: String) { self.kind = kind; self.text = text }
@@ -16,20 +14,19 @@ public struct MenuStatus: Equatable {
     public var chips: [StatusChip]
     public var notes: [String]
     public var warnings: [String]
-    public init(headline: String, detail: String? = nil, chips: [StatusChip] = [], notes: [String] = [], warnings: [String] = []) {
+    public var features: [FeatureRow]
+    public var hint: String?
+    public init(headline: String, detail: String? = nil, chips: [StatusChip] = [], notes: [String] = [], warnings: [String] = [],
+                features: [FeatureRow] = [], hint: String? = nil) {
         self.headline = headline; self.detail = detail; self.chips = chips; self.notes = notes; self.warnings = warnings
+        self.features = features; self.hint = hint
     }
 }
 
 public enum StatusLines {
-    /// Lid, power draw, battery, Wi-Fi, in that order; unknown ones are left out.
-    public static func chips(lid: LidChip, watts: Double?, batteryPercent: Int?, charging: Bool, wifi: String?) -> [StatusChip] {
+    /// Power draw, battery, Wi-Fi, in that order; unknown ones are left out. The lid has its own row.
+    public static func chips(watts: Double?, batteryPercent: Int?, charging: Bool, wifi: String?) -> [StatusChip] {
         var out: [StatusChip] = []
-        switch lid {
-        case .none: break
-        case .shut: out.append(StatusChip(kind: .lid, text: "Lid shut"))
-        case .canClose: out.append(StatusChip(kind: .lid, text: "Lid can close"))
-        }
         if let w = watts, abs(w) >= 0.05 {
             out.append(StatusChip(kind: .power, text: String(format: "%.1f W", abs(w))))
         }

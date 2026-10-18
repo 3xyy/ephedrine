@@ -25,6 +25,9 @@ final class StatusCardView: NSView {
         var headline = NSRect.zero
         var detail: NSRect?
         var chips: [(rect: NSRect, chip: StatusChip)] = []
+        var block = NSRect.zero                       // the always-on feature rows (empty when none)
+        var rows: [(rect: NSRect, row: FeatureRow)] = []
+        var hint: (rect: NSRect, text: String)?
         var notes: [(rect: NSRect, text: String)] = []
         var warnings: [(rect: NSRect, text: String)] = []
         var height: CGFloat = 0
@@ -37,6 +40,10 @@ final class StatusCardView: NSView {
     private static let chipIconGap: CGFloat = 4   // chip icon to text
     private static let chipFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
     private static let textX: CGFloat = 56
+    private static let rowFont = NSFont.systemFont(ofSize: 11.5)
+    private static let rowH: CGFloat = 24
+    private static let blockPad: CGFloat = 4
+    private static let rowIconX: CGFloat = 9, rowLabelX: CGFloat = 31, rowTextX: CGFloat = 109
 
     init(status: MenuStatus, glyph: NSImage, tint: NSColor) {
         self.status = status; self.glyph = glyph; self.tint = tint
@@ -46,7 +53,10 @@ final class StatusCardView: NSView {
         setAccessibilityRole(.staticText)
         var parts = [status.headline]
         if let d = status.detail { parts.append(d) }
-        parts += status.chips.map(\.text) + status.notes + status.warnings
+        parts += status.chips.map(\.text)
+        parts += status.features.map { "\($0.label), \($0.text)" }
+        if let h = status.hint { parts.append(h) }
+        parts += status.notes + status.warnings
         setAccessibilityLabel(parts.joined(separator: ", "))
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -70,11 +80,38 @@ final class StatusCardView: NSView {
 
     private static func symbolName(_ kind: StatusChip.Kind) -> String {
         switch kind {
-        case .lid: return "laptopcomputer"
         case .power: return "bolt.fill"
         case .battery(let level, let charging):
             return charging ? "battery.100percent.bolt" : "battery.\(level)percent"
         case .wifi: return "wifi"
+        }
+    }
+
+    private static func rowSymbol(_ kind: FeatureKind) -> String {
+        switch kind {
+        case .lid: return "laptopcomputer"
+        case .lowPower: return "leaf"
+        case .whenShut: return "speaker.slash"
+        case .cmux: return "terminal"
+        case .hotspot: return "iphone"
+        case .network: return "waveform.path.ecg"
+        case .tmux: return "rectangle.split.3x1"
+        }
+    }
+
+    private static func rowIconColor(_ tone: RowTone) -> NSColor {
+        switch tone {
+        case .active: return claudeOrange
+        case .warn: return menuWarningColor
+        default: return .secondaryLabelColor
+        }
+    }
+
+    private static func rowTextColor(_ tone: RowTone) -> NSColor {
+        switch tone {
+        case .warn: return menuWarningColor
+        case .dim: return .secondaryLabelColor
+        default: return .labelColor
         }
     }
 
@@ -110,8 +147,26 @@ final class StatusCardView: NSView {
             y += 22
         }
 
-        var first = true
         let lineW = w - 2 * MenuMetrics.inset
+        if !status.features.isEmpty {
+            y += 10
+            let bh = Self.blockPad * 2 + Self.rowH * CGFloat(status.features.count)
+            l.block = NSRect(x: MenuMetrics.inset, y: y, width: lineW, height: bh)
+            var ry = y + Self.blockPad
+            for r in status.features {
+                l.rows.append((NSRect(x: MenuMetrics.inset, y: ry, width: lineW, height: Self.rowH), r))
+                ry += Self.rowH
+            }
+            y += bh
+            if let hint = status.hint {
+                y += 8
+                let hh = max(15, wrappedHeight(attributed(hint, Self.smallFont, .secondaryLabelColor), width: lineW))
+                l.hint = (NSRect(x: MenuMetrics.inset, y: y, width: lineW, height: hh), hint)
+                y += hh
+            }
+        }
+
+        var first = true
         for n in status.notes {
             y += first ? 9 : 0; first = false
             let nh = max(16, wrappedHeight(attributed(n, Self.smallFont, .secondaryLabelColor), width: lineW))
@@ -159,6 +214,34 @@ final class StatusCardView: NSView {
             t.draw(at: NSPoint(x: x, y: rect.midY - t.size().height / 2))
         }
 
+        if !layout.rows.isEmpty {
+            NSColor.labelColor.withAlphaComponent(0.07).setFill()
+            NSBezierPath(roundedRect: layout.block, xRadius: 8, yRadius: 8).fill()
+        }
+        for (rect, row) in layout.rows {
+            if let icon = symbol(Self.rowSymbol(row.kind), size: 13, color: Self.rowIconColor(row.tone)) {
+                let r = NSRect(x: rect.minX + Self.rowIconX, y: rect.midY - icon.size.height / 2, width: icon.size.width, height: icon.size.height)
+                icon.draw(in: r, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            }
+            let label = attributed(row.label, Self.rowFont, .secondaryLabelColor)
+            label.draw(at: NSPoint(x: rect.minX + Self.rowLabelX, y: rect.midY - label.size().height / 2))
+            var tx = rect.minX + Self.rowTextX
+            if row.tone == .ok {
+                NSColor.systemGreen.setFill()
+                NSBezierPath(ovalIn: NSRect(x: tx, y: rect.midY - 3, width: 6, height: 6)).fill()
+                tx += 11
+            }
+            let para = NSMutableParagraphStyle()
+            para.lineBreakMode = .byTruncatingTail
+            let t = NSAttributedString(string: row.text, attributes: [
+                .font: Self.rowFont, .foregroundColor: Self.rowTextColor(row.tone), .paragraphStyle: para])
+            let th = ceil(t.size().height)
+            t.draw(with: NSRect(x: tx, y: rect.midY - th / 2, width: max(0, rect.maxX - Self.rowIconX - tx), height: th),
+                   options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        }
+        if let (rect, text) = layout.hint {
+            attributed(text, Self.smallFont, .secondaryLabelColor).draw(with: rect, options: opts)
+        }
         for (rect, text) in layout.notes {
             attributed(text, Self.smallFont, .secondaryLabelColor).draw(with: rect, options: opts)
         }

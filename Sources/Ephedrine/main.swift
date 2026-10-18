@@ -1279,15 +1279,50 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
     /// Everything the status card shows. Watts and Wi-Fi are read here, when the menu opens, never on a timer.
     func menuStatus() -> MenuStatus {
-        let lid: LidChip = lidClosedNow() ? .shut : (lidActive && fm.fileExists(atPath: lidMarkerPath) ? .canClose : .none)
-        let chips = StatusLines.chips(lid: lid, watts: instantWatts(), batteryPercent: batteryPercent(),
+        let chips = StatusLines.chips(watts: instantWatts(), batteryPercent: batteryPercent(),
                                       charging: isCharging(), wifi: wifiStatusName())
         var notes: [String] = []
         if batteryText() != nil { notes.append(StatusLines.batteryNote(floor: awakeBatteryFloor(settings.batteryFloor))) }
         let h = heldState
         if let held = StatusLines.held(paused: h.paused, dockerPaused: h.dockerPaused, muted: h.muted,
                                        lowPower: h.lowPower, lastGap: h.lastGap) { notes.append(held) }
-        return MenuStatus(headline: statusText(), detail: nextText(), chips: chips, notes: notes, warnings: menuWarnings())
+        let snap = featureSnapshot()
+        return MenuStatus(headline: statusText(), detail: nextText(), chips: chips, notes: notes, warnings: menuWarnings(),
+                          features: FeatureRows.rows(snap), hint: FeatureRows.hint(snap))
+    }
+
+    /// Everything the card's feature rows say, read once when the menu opens.
+    private func featureSnapshot() -> FeatureSnapshot {
+        let now = Date()
+        let marker = lidActive && fm.fileExists(atPath: lidMarkerPath)
+        let closed = lidClosedNow()
+        let cause = fm.fileExists(atPath: lowPowerMarkerPath)
+            ? (try? String(contentsOfFile: lowPowerMarkerPath, encoding: .utf8)).flatMap { LowPowerCause(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            : nil
+        let cmuxState: CmuxRowState
+        if !cmuxSeen.installed { cmuxState = .notInstalled }
+        else if runningCmuxCLI() == nil { cmuxState = .notRunning }
+        else if case .saved = cmuxSeen.password {
+            switch cmuxSeen.access {
+            case .ok?: cmuxState = .connected(cmuxSeen.panes)
+            case .badPassword?: cmuxState = .badPassword
+            case .needsPassword?: cmuxState = .noPassword
+            default: cmuxState = .failed   // not answered yet, denied, failed, gone
+            }
+        } else { cmuxState = .noPassword }
+        let ssid = hotspotName
+        return FeatureSnapshot(
+            lidSetup: lidSetupOK, lidHolding: marker, lidClosed: closed && externalDisplayActive(),
+            claudeWorking: claudeWorkingCached, stayAwake: manualKeepAwake || keepAwakeUntil != nil,
+            lowPowerNeedsRerun: lowPowerSetupNeeded, lowPowerOn: cause,
+            lowPowerOnLidShut: settings.lowPowerOnLidShut, lowPowerFloor: settings.lowPowerFloor,
+            muteOnShut: settings.lidMute, keyboardOffOnShut: settings.lidKeyboardOff,
+            pauseAppsOnShut: settings.lidPauseApps, dockerRule: settings.lidDockerRule,
+            cmux: cmuxState, hotspotSSID: ssid, hotspotPassword: hotspotPassword,
+            holding: awake.systemOn || lidShutHold(closed: closed),
+            networkUp: outage.downSince == nil,
+            downFor: outage.downSince.map { now.timeIntervalSince($0) }, lastGap: outage.lastGap,
+            tmuxTargets: settings.tmuxTargets.count)
     }
 
     /// The card's glyph and tile color: the menu bar's own choice of icon.
