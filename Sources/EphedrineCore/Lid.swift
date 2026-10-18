@@ -370,3 +370,35 @@ public struct DetectorBatteryCap {
         return now.timeIntervalSince(s) < Self.limit
     }
 }
+
+/// The version of the sudoers rule this build installs (2 added Low Power Mode).
+public let lidRuleVersion = 2
+
+/// Lid setup is installed but was done by an older build (or before the app
+/// kept a stamp): the Low Power Mode rule may be missing, so offer to re-run it.
+public func lidRuleNeedsRerun(setupInstalled: Bool, stamp: String?) -> Bool {
+    guard setupInstalled else { return false }
+    return stamp?.trimmingCharacters(in: .whitespacesAndNewlines) != "\(lidRuleVersion)"
+}
+
+/// What Settings says under a password field. Never the password itself.
+public enum SavedPasswordState: Equatable { case found, missing, unreadable }
+
+public func savedPasswordLine(_ state: SavedPasswordState) -> String {
+    switch state {
+    case .found: return "A password is saved"
+    case .missing: return "No password saved"
+    case .unreadable: return "A password is saved but Ephedrine can't read it. Enter it again."
+    }
+}
+
+public func passwordFieldPlaceholder(_ state: SavedPasswordState, empty: String) -> String {
+    state == .found ? "Saved (hidden). Type a new one to replace it" : empty
+}
+
+/// The "Saved" label shows for 4 seconds after Save.
+public func savedLabelVisible(savedAt: Date?, now: Date) -> Bool {
+    guard let savedAt else { return false }
+    let d = now.timeIntervalSince(savedAt)
+    return d >= 0 && d < 4
+}

@@ -144,6 +144,16 @@ func runToolStatus(_ path: String, _ args: [String]) -> Int32 {
 
 func lidSetupInstalled() -> Bool { fm.fileExists(atPath: lidSudoersPath) }
 
+/// Which version of the sudoers rule the app last installed; absent for a setup from an older build.
+let lidRuleStampPath = "\(home)/.claude/ephedrine/lid-rule-version"
+func readLidRuleStamp() -> String? { try? String(contentsOfFile: lidRuleStampPath, encoding: .utf8) }
+func writeLidRuleStamp() {
+    try? fm.createDirectory(atPath: (lidRuleStampPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+    try? "\(lidRuleVersion)\n".write(toFile: lidRuleStampPath, atomically: true, encoding: .utf8)
+    try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: lidRuleStampPath)
+}
+func removeLidRuleStamp() { try? fm.removeItem(atPath: lidRuleStampPath) }
+
 /// Flip `disablesleep` through the sudoers rule. `-n`: never prompts.
 func setSleepDisabled(_ on: Bool) -> Bool {
     runToolStatus("/usr/bin/sudo", ["-n", "/usr/bin/pmset", "-a", "disablesleep", on ? "1" : "0"]) == 0
@@ -601,8 +611,11 @@ extension AppController {
     // MARK: Low Power Mode
 
     /// Lid setup from before Low Power Mode was in the rule: the menu and the
-    /// Lid pane offer to re-run it.
-    var lowPowerSetupNeeded: Bool { lidSetupOK && lowPowerRuleOK == false }
+    /// Lid pane offer to re-run it, on any power source. The stamp says which
+    /// rule was installed; the battery check (lowPowerRuleOK) only confirms it.
+    var lowPowerSetupNeeded: Bool {
+        lidSetupOK && (lidRuleNeedsRerun(setupInstalled: lidSetupOK, stamp: readLidRuleStamp()) || lowPowerRuleOK == false)
+    }
 
     /// Called from evaluate() every tick, once keep-awake is decided.
     func updateLowPower(holding: Bool, percent: Int?) {
@@ -764,6 +777,7 @@ extension AppController {
                     return
                 }
                 logLine("lid-closed setup installed (\(lidSudoersPath))")
+                writeLidRuleStamp()
                 self.lidRetryAfter = .distantPast
                 self.lowPowerRuleOK = nil   // ask the new rule about Low Power Mode, now
                 self.lowPowerCheckFailures = 0
@@ -797,6 +811,7 @@ extension AppController {
                 self.updateWatchdog()
                 if !sleepIsDisabled() { try? fm.removeItem(atPath: lidMarkerPath); self.updateWatchdog() }
                 self.lidSetupOK = lidSetupInstalled()
+                if !self.lidSetupOK { removeLidRuleStamp() }
                 logLine(err.map { "lid-closed setup removal failed: \($0)" } ?? "lid-closed setup removed")
                 self.evaluate()
             }

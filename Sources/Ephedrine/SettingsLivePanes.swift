@@ -148,10 +148,12 @@ extension LidPane {
             LabeledContent("Status", value: controller.hotspotStatus)
             TextField("Network name", text: $ui.hotspotSSID)
             HStack {
-                SecureField("Password", text: $ui.hotspotPassword)
+                SecureField(passwordFieldPlaceholder(controller.hotspotSavedState, empty: "Password"), text: $ui.hotspotPassword)
                     .onSubmit(saveHotspot)
                 Button("Save", action: saveHotspot)
+                SavedLabel(visible: savedLabelVisible(savedAt: ui.hotspotSavedAt, now: now))
             }
+            Text(savedPasswordLine(controller.hotspotSavedState)).font(.caption).foregroundStyle(.secondary)
             if !ui.hotspotMessage.isEmpty { Tip(ui.hotspotMessage) }
             if !controller.hotspotName.isEmpty {
                 Button("Remove hotspot", role: .destructive) {
@@ -177,6 +179,7 @@ extension LidPane {
     fileprivate func saveHotspot() {
         ui.hotspotMessage = controller.saveHotspot(ssid: ui.hotspotSSID, password: ui.hotspotPassword) ?? ""
         ui.hotspotPassword = ""
+        if ui.hotspotMessage.isEmpty { ui.hotspotSavedAt = Date() }
     }
 }
 

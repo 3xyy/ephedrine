@@ -150,6 +150,7 @@ extension AppController {
                 return "Couldn't save the password (OSStatus \(s))"
             }
             logLine("hotspot \(ssid) saved")
+            hotspotPassword = .ok   // the line under the field follows at once
         }
         if !old.isEmpty && old != ssid { _ = HotspotKeychain.delete(ssid: old) }
         settings.hotspotSSID = ssid
@@ -168,6 +169,16 @@ extension AppController {
         }
         settings.hotspotSSID = ""
         hotspotPassword = .ok
+    }
+
+    /// For the line under the password field in Settings (state only, never the value).
+    var hotspotSavedState: SavedPasswordState {
+        guard !hotspotName.isEmpty else { return .missing }
+        switch hotspotPassword {
+        case .ok: return .found
+        case .missing: return .missing
+        case .unreadable: return .unreadable
+        }
     }
 
     /// The hotspot line in Settings › Lid.

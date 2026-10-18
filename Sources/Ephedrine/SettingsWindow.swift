@@ -41,6 +41,8 @@ final class SettingsUI: ObservableObject {
     @Published var hotspotSSID = ""           // typed in Lid › iPhone hotspot, filled from the saved name when the pane opens
     @Published var hotspotPassword = ""       // cleared once saved to the keychain
     @Published var hotspotMessage = ""        // why the last Save did nothing
+    @Published var cmuxSavedAt: Date?         // when Save last worked, for the 4-second "Saved" label
+    @Published var hotspotSavedAt: Date?
     @Published var tmuxTarget = ""            // typed in Claude Code › tmux panes, cleared once added
 }
 
@@ -289,10 +291,12 @@ struct ClaudePane: View {
             Section("cmux") {
                 LabeledContent("Status", value: controller.cmuxStatus)
                 HStack {
-                    SecureField("Socket password", text: $ui.cmuxPassword)
+                    SecureField(passwordFieldPlaceholder(controller.cmuxSavedState, empty: "Socket password"), text: $ui.cmuxPassword)
                         .onSubmit { if !ui.cmuxPassword.isEmpty { saveCmuxPassword() } }   // only Save removes one
                     Button("Save", action: saveCmuxPassword)
+                    SavedLabel(visible: savedLabelVisible(savedAt: ui.cmuxSavedAt, now: now))
                 }
+                Text(savedPasswordLine(controller.cmuxSavedState)).font(.caption).foregroundStyle(.secondary)
                 Tip("Lets Ephedrine read cmux's panes and type there with the same rules as in Terminal, and only into an empty Claude Code prompt or its limit menu. Use the password you set in cmux. It's kept in your keychain. Saving an empty field removes it.")
             }
             .task { controller.refreshCmux() }   // on one section: on the Group it would run once per child
@@ -318,7 +322,17 @@ struct ClaudePane: View {
     }
 
     private func saveCmuxPassword() {
-        controller.saveCmuxPassword(ui.cmuxPassword)
+        let typed = !ui.cmuxPassword.isEmpty
+        let ok = controller.saveCmuxPassword(ui.cmuxPassword)
         ui.cmuxPassword = ""
+        if ok && typed { ui.cmuxSavedAt = Date() }
+    }
+}
+
+/// "Saved" with a checkmark, shown next to a Save button for a few seconds.
+struct SavedLabel: View {
+    let visible: Bool
+    var body: some View {
+        if visible { Label("Saved", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
     }
 }

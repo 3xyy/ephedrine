@@ -341,12 +341,24 @@ extension AppController {
 
     /// Save (or with "", remove) the password on the main thread, where a
     /// keychain question can't stall the scan, then check again.
-    func saveCmuxPassword(_ password: String) {
+    @discardableResult
+    func saveCmuxPassword(_ password: String) -> Bool {
         let s = CmuxKeychain.save(password)
+        if s == errSecSuccess { cmuxSeen.password = password.isEmpty ? .none : .saved }   // the line under the field follows at once
         logLine(s != errSecSuccess ? "couldn't save the cmux password (OSStatus \(s))"
                 : password.isEmpty ? "cmux password removed" : "cmux password saved")
         cmuxSeen.access = nil   // "Checking…" until the answer is in
         refreshCmux()
+        return s == errSecSuccess
+    }
+
+    /// For the line under the password field in Settings (state only, never the value).
+    var cmuxSavedState: SavedPasswordState {
+        switch cmuxSeen.password {
+        case .none: return .missing
+        case .saved: return .found
+        case .unreadable: return .unreadable
+        }
     }
 
     /// The cmux line in Settings › Claude Code.
