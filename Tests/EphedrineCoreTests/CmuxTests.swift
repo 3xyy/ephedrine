@@ -205,9 +205,13 @@ private let cmuxTreeSample = """
     #expect(cmuxAccess(exitCode: 1, output: "Error: auth_failed: Invalid password") == .badPassword)
     // The CLI couldn't be started.
     #expect(cmuxAccess(exitCode: cmuxLaunchFailed, output: "") == .notInstalled)
-    // Anything else that failed (socket off, cmux quitting) isn't a connection.
-    #expect(cmuxAccess(exitCode: 1, output: "Error: Socket not found at /Users/me/.local/state/cmux/cmux.sock") == .denied)
-    #expect(cmuxAccess(exitCode: 1, output: "") == .denied)
+    // Anything else that failed (socket off, cmux quitting) carries cmux's own line, not the Automation steps.
+    #expect(cmuxAccess(exitCode: 1, output: "Error: Socket not found at /Users/me/.local/state/cmux/cmux.sock")
+            == .failed("Socket not found at /Users/me/.local/state/cmux/cmux.sock"))
+    #expect(cmuxAccess(exitCode: 1, output: "Error: ERROR: overloaded retry_after_ms=200 reason=pool_saturated\nmore")
+            == .failed("overloaded retry_after_ms=200 reason=pool_saturated"))
+    #expect(cmuxAccess(exitCode: 1, output: "") == .failed("exit 1"))
+    #expect(cmuxAccess(exitCode: 2, output: "{\"windows\": []}") == .failed("exit 2"))
 }
 
 /// Error text counts only on the CLI's own "Error:" lines, so a pane or
@@ -221,6 +225,7 @@ private let cmuxTreeSample = """
     let id = "5D2F7A10-8E3B-4C6D-A1F2-3B4C5D6E7F01"
     #expect(cmuxListArgs == ["--json", "--id-format", "uuids", "tree", "--all"])
     #expect(cmuxReadArgs(id) == ["read-screen", "--surface", id])
+    #expect(cmuxInputStateArgs(id) == ["rpc", "surface.input_state", "{\"surface_id\":\"\(id)\"}"])
     // The text goes after "--", so it can never be read as a flag.
     #expect(cmuxSendArgs(id, "continue", force: false) == ["send", "--surface", id, "--", "continue"])
     #expect(cmuxSendArgs(id, "1", force: true) == ["send", "--surface", id, "--force", "--", "1"])
@@ -230,18 +235,101 @@ private let cmuxTreeSample = """
 
 @Test func cmuxStatusLines() {
     let notConnected = "Not connected: in cmux, open Settings › Automation, choose Password and set one, then enter it here"
-    #expect(cmuxStatusText(installed: false, running: false, passwordSaved: true, access: .ok, panes: 2) == "Not installed")
-    #expect(cmuxStatusText(installed: true, running: true, passwordSaved: false, access: nil, panes: 0) == notConnected)
-    #expect(cmuxStatusText(installed: true, running: false, passwordSaved: false, access: nil, panes: 0) == notConnected)
-    #expect(cmuxStatusText(installed: true, running: false, passwordSaved: true, access: .ok, panes: 2)
-            == "Password saved. Connects when cmux is open")
-    #expect(cmuxStatusText(installed: true, running: true, passwordSaved: true, access: nil, panes: 0) == "Checking…")
-    #expect(cmuxStatusText(installed: true, running: true, passwordSaved: true, access: .denied, panes: 0) == notConnected)
-    #expect(cmuxStatusText(installed: true, running: true, passwordSaved: true, access: .needsPassword, panes: 0) == notConnected)
-    #expect(cmuxStatusText(installed: true, running: true, passwordSaved: true, access: .badPassword, panes: 0)
-            == "Password not accepted")
-    #expect(cmuxStatusText(installed: true, running: true, passwordSaved: true, access: .notInstalled, panes: 0) == "Not installed")
-    #expect(cmuxStatusText(installed: true, running: true, passwordSaved: true, access: .ok, panes: 3) == "Connected, 3 panes")
-    #expect(cmuxStatusText(installed: true, running: true, passwordSaved: true, access: .ok, panes: 1) == "Connected, 1 pane")
-    #expect(cmuxStatusText(installed: true, running: true, passwordSaved: true, access: .ok, panes: 0) == "Connected, 0 panes")
+    func line(installed: Bool = true, running: Bool = true, password: CmuxSavedPassword = .saved,
+              _ access: CmuxAccess?, panes: Int = 0) -> String {
+        cmuxStatusText(installed: installed, running: running, password: password, access: access, panes: panes)
+    }
+    #expect(line(installed: false, running: false, .ok, panes: 2) == "Not installed")
+    #expect(line(password: .none, nil) == notConnected)
+    #expect(line(running: false, password: .none, nil) == notConnected)
+    #expect(line(password: .unreadable(-25293), .ok, panes: 2) == "Couldn't read the saved password (OSStatus -25293)")
+    #expect(line(running: false, .ok, panes: 2) == "Password saved. Connects when cmux is open")
+    #expect(line(nil) == "Checking…")
+    #expect(line(.denied) == notConnected)
+    #expect(line(.needsPassword) == notConnected)
+    #expect(line(.badPassword) == "Password not accepted")
+    #expect(line(.notInstalled) == "Not installed")
+    #expect(line(.failed("Socket not found at /tmp/cmux.sock")) == "Not connected: Socket not found at /tmp/cmux.sock")
+    #expect(line(.ok, panes: 3) == "Connected, 3 panes")
+    #expect(line(.ok, panes: 1) == "Connected, 1 pane")
+    #expect(line(.ok, panes: 0) == "Connected, 0 panes")
+}
+
+// `cmux rpc surface.input_state '{"surface_id":…}'`: cmux 0.65.2 prints the
+// result with sorted keys, pretty-printed (TerminalController+SurfaceInputState).
+private func inputStateJSON(_ state: String, agent: Bool = true, terminal: Bool = true, draft: Int? = nil) -> String {
+    """
+    {
+      "agent" : \(agent),
+      "blocks_typing" : \(agent && (state == "draft" || state == "dialog")),\(draft.map { "\n  \"draft_length\" : \($0)," } ?? "")
+      "lifecycle" : "idle",
+      "state" : "\(state)",
+      "surface_id" : "5D2F7A10-8E3B-4C6D-A1F2-3B4C5D6E7F01",
+      "terminal" : \(terminal),
+      "waiting_on_human" : false,
+      "workspace_id" : "C3E1A2B4-5D6F-4A1B-8C9D-0E1F2A3B4C01"
+    }
+    """
+}
+
+@Test func cmuxInputStateParsing() {
+    #expect(parseCmuxInputState(inputStateJSON("empty")) == CmuxInputState(prompt: .empty, agent: true, terminal: true))
+    #expect(parseCmuxInputState(inputStateJSON("draft", draft: 12)) == CmuxInputState(prompt: .draft, agent: true, terminal: true))
+    #expect(parseCmuxInputState(inputStateJSON("dialog")) == CmuxInputState(prompt: .dialog, agent: true, terminal: true))
+    #expect(parseCmuxInputState(inputStateJSON("unknown", agent: false)) == CmuxInputState(prompt: .unknown, agent: false, terminal: true))
+    // A browser surface: no "blocks_typing", terminal false.
+    #expect(parseCmuxInputState("{\"agent\":false,\"lifecycle\":\"unknown\",\"state\":\"unknown\",\"terminal\":false}")
+            == CmuxInputState(prompt: .unknown, agent: false, terminal: false))
+    // A state this version doesn't know reads as unknown; missing flags read as false.
+    #expect(parseCmuxInputState("{\"state\":\"thinking\"}") == CmuxInputState(prompt: .unknown, agent: false, terminal: false))
+    #expect(parseCmuxInputState("") == nil)
+    #expect(parseCmuxInputState("{}") == nil)
+    #expect(parseCmuxInputState("{\"state\": 3}") == nil)
+    #expect(parseCmuxInputState("Error: not_found: Surface not found") == nil)
+    #expect(parseCmuxInputState("[\"empty\"]") == nil)
+}
+
+@Test func cmuxTypeDecisions() {
+    func st(_ p: CmuxInputState.Prompt, agent: Bool = true, terminal: Bool = true) -> CmuxInputState {
+        CmuxInputState(prompt: p, agent: agent, terminal: terminal)
+    }
+    // "continue": only into an empty Claude Code prompt, never forced.
+    #expect(cmuxTypeDecision(state: st(.empty), purpose: .continuePrompt) == .send)
+    #expect(cmuxTypeDecision(state: st(.draft), purpose: .continuePrompt) == .skip("someone is typing in its prompt"))
+    #expect(cmuxTypeDecision(state: st(.dialog), purpose: .continuePrompt) == .skip("a question or menu is open"))
+    #expect(cmuxTypeDecision(state: st(.unknown), purpose: .continuePrompt) == .skip("no Claude Code prompt on its live screen"))
+    #expect(cmuxTypeDecision(state: nil, purpose: .continuePrompt) == .skip("couldn't read what its live screen shows"))
+    // The limit-menu answer: forced, and only while a menu or question is open.
+    #expect(cmuxTypeDecision(state: st(.dialog), purpose: .limitMenuAnswer) == .force)
+    #expect(cmuxTypeDecision(state: st(.empty), purpose: .limitMenuAnswer) == .skip("no menu is open on its live screen"))
+    #expect(cmuxTypeDecision(state: st(.draft), purpose: .limitMenuAnswer) == .skip("someone is typing in its prompt"))
+    #expect(cmuxTypeDecision(state: st(.unknown), purpose: .limitMenuAnswer) == .skip("no Claude Code prompt on its live screen"))
+    #expect(cmuxTypeDecision(state: nil, purpose: .limitMenuAnswer) == .skip("couldn't read what its live screen shows"))
+    // No agent reported, or not a terminal: never typed into, whatever the screen shows.
+    for p in [CmuxInputState.Prompt.empty, .draft, .dialog, .unknown] {
+        for purpose in [CmuxTypePurpose.continuePrompt, .limitMenuAnswer] {
+            #expect(cmuxTypeDecision(state: st(p, agent: false), purpose: purpose) == .skip("cmux doesn't report Claude Code running in it"))
+            #expect(cmuxTypeDecision(state: st(p, terminal: false), purpose: purpose) == .skip("it isn't a terminal"))
+        }
+    }
+}
+
+/// Force switches off cmux's own draft and dialog guard, so it is returned for
+/// one combination only: a menu answer while a menu or question is open.
+@Test func cmuxForceOnlyForMenuDialog() {
+    var forced: [String] = []
+    for p in [CmuxInputState.Prompt.empty, .draft, .dialog, .unknown] {
+        for agent in [true, false] {
+            for terminal in [true, false] {
+                for purpose in [CmuxTypePurpose.continuePrompt, .limitMenuAnswer] {
+                    let s = CmuxInputState(prompt: p, agent: agent, terminal: terminal)
+                    if cmuxTypeDecision(state: s, purpose: purpose) == .force { forced.append("\(purpose) \(p) \(agent) \(terminal)") }
+                }
+            }
+        }
+    }
+    for purpose in [CmuxTypePurpose.continuePrompt, .limitMenuAnswer] {
+        if cmuxTypeDecision(state: nil, purpose: purpose) == .force { forced.append("\(purpose) nil") }
+    }
+    #expect(forced == ["limitMenuAnswer dialog true true"])
 }

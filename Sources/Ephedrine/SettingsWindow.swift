@@ -65,7 +65,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 
     // The window is only hidden on close (reused next time), so stop the live
     // refresh so nothing re-reads controller state while nobody's looking.
-    func windowWillClose(_ notification: Notification) { clock.stop() }
+    func windowWillClose(_ notification: Notification) {
+        clock.stop()
+        ui.cmuxPassword = ""   // a typed but unsaved password doesn't wait in memory for the next open
+    }
 }
 
 /// Ticks once a second while the settings window is open so the live panes
@@ -243,8 +246,9 @@ struct ClaudePane: View {
                         .onSubmit { if !ui.cmuxPassword.isEmpty { saveCmuxPassword() } }   // only Save removes one
                     Button("Save", action: saveCmuxPassword)
                 }
-                Tip("Lets Ephedrine read cmux's panes and type there with the same rules as in Terminal. Use the password you set in cmux. It's kept in your keychain. Saving an empty field removes it.")
+                Tip("Lets Ephedrine read cmux's panes and type there with the same rules as in Terminal, and only into an empty Claude Code prompt or its limit menu. Use the password you set in cmux. It's kept in your keychain. Saving an empty field removes it.")
             }
+            .task { controller.refreshCmux() }   // on one section: on the Group it would run once per child
             Section {
                 Toggle(isOn: $settings.autoResumeLimit) {
                     Text("Continue after a usage limit resets")
@@ -259,11 +263,10 @@ struct ClaudePane: View {
                 Tip("Get a notification when any limit (session, weekly, or per-model) reaches this level.")
             }
         }
-        .task { controller.refreshCmux() }
     }
 
     private func saveCmuxPassword() {
-        controller.refreshCmux(newPassword: ui.cmuxPassword)
+        controller.saveCmuxPassword(ui.cmuxPassword)
         ui.cmuxPassword = ""
     }
 }

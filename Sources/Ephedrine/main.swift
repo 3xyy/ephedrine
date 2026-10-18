@@ -72,16 +72,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var lastWorkingSeen = false
     var terminalTabsSeen = -1                 // main-thread copy of the last scan's tab count (-1 = not yet)
     var errorSkipLogged: [String: String] = [:]   // tab key → last logged reason (continueQueue only)
-    var lastCmuxLogged = ""                        // last cmux state logged (continueQueue only)
-    /// What Settings shows for cmux (main thread; checks run on continueQueue).
-    /// Read once at launch so the pane's first frame isn't a wrong "Not installed".
-    struct CmuxSeen {
-        var installed = cmuxInstalled()
-        var passwordSaved = CmuxKeychain.read() != nil   // never shows a dialog
-        var access: CmuxAccess?
-        var panes = 0
-    }
-    var cmuxSeen = CmuxSeen()
+    var cmuxScan = CmuxScanState()                 // cmux's per-scan bookkeeping (continueQueue only; Cmux.swift)
+    var cmuxSeen = CmuxSeen()                      // what Settings shows for cmux (main thread)
 
     var scanning = false
     var tickCount = 0
@@ -90,9 +82,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     // are only a fallback: didWake has been seen firing inside a DarkWake, so
     // `fullyAwake` (kernel capabilities, read each tick) is what gates both.
     var systemSleeping = false
-    var lastFullWake = Date.distantPast
+    var lastFullWake = Date.distantPast { didSet { wakeGate.update(fullyAwake: fullyAwake, lastFullWake: lastFullWake) } }
     var lastWillSleep = Date.distantPast   // a sleep can take ~30s to land after willSleep
-    var fullyAwake = true                  // from the kernel's capabilities each tick (see systemFullyAwake)
+    var fullyAwake = true {                // from the kernel's capabilities each tick (see systemFullyAwake)
+        didSet { wakeGate.update(fullyAwake: fullyAwake, lastFullWake: lastFullWake) }
+    }
+    let wakeGate = WakeGate()              // the two above, for the scan queue's last check before typing
     let postWakeQuiet: TimeInterval = 60   // let the network come back before typing
     let continueQueue = DispatchQueue(label: "ephedrine.autocontinue")
 
@@ -427,8 +422,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
     /// Runs on continueQueue. Detects stopped API errors in Terminal tabs and
     /// cmux panes and types "continue" with the selected retry policy.
+    /// Terminal is read and handled first, exactly as before cmux support;
+    /// cmux is read after, so a slow cmux can't make a Terminal read stale.
     func scanTerminalForErrors(_ flags: ScanFlags) {
-        let now = Date()
         let (termTabs, termErr) = terminalTabsSnapshot()
 
         if termTabs.count != lastTabCount {
@@ -439,12 +435,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let n = termTabs.count
         DispatchQueue.main.async { [weak self] in self?.terminalTabsSeen = n; self?.terminalScanError = termErr }
 
-        let (cmuxTabs, cmuxRead) = scanCmux(flags)
-        let tabs = termTabs + cmuxTabs
-        // Whether this scan read the place a state key's tab lives. 0 Terminal
-        // tabs means the Terminal read failed, which says nothing about its tabs.
-        let sourceRead: (String) -> Bool = { $0.hasPrefix(cmuxKeyPrefix) ? cmuxRead : !termTabs.isEmpty }
+        // 0 Terminal tabs means the Terminal read failed, which says nothing about its tabs.
+        let termRead: (String) -> Bool = { _ in !termTabs.isEmpty }
+        // Asleep (lid closed), in a dark wake, or just woke: type nothing, and
+        // leave retry/limit state untouched so it resumes once properly awake.
+        if flags.canType { handleTabs(termTabs, flags: flags, now: Date(), sourceRead: termRead, cmux: false) }
 
+        let (cmuxTabs, cmuxRead) = scanCmux(flags)
+        if flags.canType { handleTabs(cmuxTabs, flags: flags, now: Date(), sourceRead: cmuxRead, cmux: true) }
+
+        let tabs = termTabs + cmuxTabs
         if flags.watchWorking {
             let working = tabs.contains { claudeWorkingVisible($0.text) }
             if working != lastWorkingSeen && !tabs.isEmpty {   // 0 tabs = failed read
@@ -459,10 +459,34 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             }
             DispatchQueue.main.async { [weak self] in self?.claudeWorkingCached = working }
         }
-        // Asleep (lid closed), in a dark wake, or just woke: type nothing, and
-        // leave retry/limit state untouched so it resumes once properly awake.
         guard flags.canType else { return }
 
+        // forget API-error tabs that have been error-free for 90s (recovered);
+        // a failed read says nothing about recovery
+        let now = Date()
+        for (key, st) in continueStates
+            where (key.hasPrefix(cmuxKeyPrefix) ? cmuxRead(key) : termRead(key)) && now.timeIntervalSince(st.lastErrorAt) > 90 {
+            continueStates.removeValue(forKey: key)
+            logLine("auto-continue reset (\(key) recovered)")
+        }
+        endCmuxEpisodes()
+        // A retry still to come counts as Claude working (keeps lid-closed mode on).
+        let retrying = flags.mode != .off && continueStates.values.contains { $0.attempts < flags.mode.maxAttempts }
+        DispatchQueue.main.async { [weak self] in self?.retryPending = retrying }
+
+        // Stay awake only for a scheduled wait, never just because limit text
+        // is on screen. Stale text would otherwise hold the Mac awake for days.
+        let resumeAts = limitEpisodes.values.compactMap(\.resumeAt)
+        DispatchQueue.main.async { [weak self] in self?.limitResumeAts = resumeAts }
+    }
+
+    /// Right before typing, not the scan's start-time copy (continueQueue).
+    func canTypeNow() -> Bool { wakeGate.canType(quiet: postWakeQuiet) }
+
+    /// Runs on continueQueue. One source's tabs (Terminal's, or cmux's):
+    /// retry API errors, handle usage limits, and resume due limit waits for
+    /// that source's keys.
+    func handleTabs(_ tabs: [ScanTab], flags: ScanFlags, now: Date, sourceRead: (String) -> Bool, cmux: Bool) {
         for tab in tabs {
             // Claude Code retrying by itself: the error episode is still going
             // (keeps the attempt count, and so the give-up limit, across its cycles).
@@ -493,132 +517,30 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             var st = continueStates[tab.key]
                 ?? AutoContinueState(attempts: 0, nextTryAt: now.addingTimeInterval(flags.mode.delay(0)), lastErrorAt: now)
             st.lastErrorAt = now
-            if now >= st.nextTryAt && st.attempts < flags.mode.maxAttempts {
-                let notTyped = sendToTab("continue", tab.source)
-                st.attempts += 1
-                st.nextTryAt = now.addingTimeInterval(flags.mode.delay(st.attempts))
-                logLine("auto-continue #\(st.attempts) → \(tab.key)" + (notTyped.map { ", but nothing was typed: \($0)" } ?? ""))
-                if flags.mode.maxAttempts != Int.max && st.attempts >= flags.mode.maxAttempts {
-                    let n = UNMutableNotificationContent()
-                    n.title = "Ephedrine"
-                    n.body = "Auto-continue gave up after \(flags.mode.maxAttempts) tries "
-                        + "(\(tab.key.hasPrefix(cmuxKeyPrefix) ? "a cmux pane" : tab.key))."
-                    UNUserNotificationCenter.current().add(
-                        UNNotificationRequest(identifier: "ka_giveup_\(tab.key)", content: n, trigger: nil))
+            if now >= st.nextTryAt && st.attempts < flags.mode.maxAttempts && cmuxScan.stuck.contains(tab.key) {
+                st.attempts = flags.mode.maxAttempts   // typing changed nothing there: done with this error (logged then)
+            } else if now >= st.nextTryAt && st.attempts < flags.mode.maxAttempts {
+                let result = sendToTab("continue", tab.source, purpose: .continuePrompt, canTypeNow: canTypeNow,
+                                       stillWanted: { claudeErrorStatus($0) == .unanswered })
+                if result != .notAwake {   // not awake: nothing typed or counted, it tries again next scan
+                    st.attempts += 1
+                    st.nextTryAt = now.addingTimeInterval(flags.mode.delay(st.attempts))
+                    logLine("auto-continue #\(st.attempts) → \(tab.key)" + (result.skipReason.map { ", but nothing was typed: \($0)" } ?? ""))
+                    if case .typed(let screen?) = result { noteCmuxTyped(tab.key, screen: screen) }
+                    if flags.mode.maxAttempts != Int.max && st.attempts >= flags.mode.maxAttempts {
+                        let n = UNMutableNotificationContent()
+                        n.title = "Ephedrine"
+                        n.body = "Auto-continue gave up after \(flags.mode.maxAttempts) tries "
+                            + "(\(tab.key.hasPrefix(cmuxKeyPrefix) ? "a cmux pane" : tab.key))."
+                        UNUserNotificationCenter.current().add(
+                            UNNotificationRequest(identifier: "ka_giveup_\(tab.key)", content: n, trigger: nil))
+                    }
                 }
             }
             continueStates[tab.key] = st
         }
 
-        if flags.resumeLimit { resumeDueLimits(tabs, now: now, sourceRead: sourceRead) }
-
-        // forget API-error tabs that have been error-free for 90s (recovered);
-        // a failed read says nothing about recovery
-        for (key, st) in continueStates where sourceRead(key) && now.timeIntervalSince(st.lastErrorAt) > 90 {
-            continueStates.removeValue(forKey: key)
-            logLine("auto-continue reset (\(key) recovered)")
-        }
-        // A retry still to come counts as Claude working (keeps lid-closed mode on).
-        let retrying = flags.mode != .off && continueStates.values.contains { $0.attempts < flags.mode.maxAttempts }
-        DispatchQueue.main.async { [weak self] in self?.retryPending = retrying }
-
-        // Stay awake only for a scheduled wait, never just because limit text
-        // is on screen. Stale text would otherwise hold the Mac awake for days.
-        let resumeAts = limitEpisodes.values.compactMap(\.resumeAt)
-        DispatchQueue.main.async { [weak self] in self?.limitResumeAts = resumeAts }
-    }
-
-    /// Runs on continueQueue. cmux's panes for this scan, read only while cmux
-    /// is running and a password is saved; otherwise none, and the scan is
-    /// Terminal's alone, as before cmux support. `read` is true when the
-    /// listing worked, so a pane missing from it really is gone.
-    func scanCmux(_ flags: ScanFlags) -> (tabs: [ScanTab], read: Bool) {
-        guard let cli = flags.cmuxCLI else {
-            // Not running: nothing can be read or typed there, so drop its
-            // state rather than keep a retry or a limit wait alive for it.
-            forgetCmuxTabs()
-            if !lastCmuxLogged.isEmpty { lastCmuxLogged = ""; logLine("cmux: not running, reading Terminal only") }
-            return ([], false)
-        }
-        guard let pw = CmuxKeychain.read() else {
-            forgetCmuxTabs()
-            noteCmux("cmux: running, but no password saved in Settings › Claude Code, so not reading it")
-            DispatchQueue.main.async { [weak self] in self?.cmuxSeen.passwordSaved = false }
-            return ([], false)
-        }
-        let (got, access) = cmuxSurfacesSnapshot(cli: cli, password: pw)
-        guard let access else {
-            noteCmux("cmux: didn't answer within 5s, trying again next scan")
-            return ([], false)   // a stall says nothing about its panes, so keep their state
-        }
-        let panes = got.count
-        DispatchQueue.main.async { [weak self] in
-            self?.cmuxSeen.passwordSaved = true; self?.cmuxSeen.access = access; self?.cmuxSeen.panes = panes
-        }
-        switch access {
-        case .ok:   // logged when the set of panes changes, not each time a title does
-            noteCmux("cmux: connected, \(panes) pane(s): "
-                     + got.map { "\(cmuxKeyPrefix)\($0.0.id) “\($0.0.label)”" }.joined(separator: ", "),
-                     key: "ok " + got.map(\.0.id).joined(separator: " "))
-        case .badPassword: noteCmux("cmux: password not accepted, not reading it")
-        case .needsPassword: noteCmux("cmux: wants a password it doesn't have (set one in cmux Settings › Automation)")
-        case .denied: noteCmux("cmux: not connected (its Automation setting doesn't let Ephedrine in)")
-        case .notInstalled: noteCmux("cmux: couldn't start its command-line tool")
-        }
-        guard access == .ok else { forgetCmuxTabs(); return ([], false) }
-        let tabs: [ScanTab] = got.map { (.cmux(surfaceID: $0.0.id), cmuxKeyPrefix + $0.0.id, $0.1) }
-        let listed = Set(tabs.map(\.key))   // retry and limit state ages out in the scan; this is just the log's
-        if errorSkipLogged.keys.contains(where: { $0.hasPrefix(cmuxKeyPrefix) && !listed.contains($0) }) {
-            errorSkipLogged = errorSkipLogged.filter { !$0.key.hasPrefix(cmuxKeyPrefix) || listed.contains($0.key) }
-        }
-        return (tabs, true)
-    }
-
-    /// Log a cmux state once, when it (or the `key` standing for it) changes (continueQueue).
-    func noteCmux(_ state: String, key: String? = nil) {
-        guard (key ?? state) != lastCmuxLogged else { return }
-        lastCmuxLogged = key ?? state
-        logLine(state)
-    }
-
-    /// Drop every cmux pane's retry, limit and log state (continueQueue).
-    func forgetCmuxTabs() {
-        let isCmux: (String) -> Bool = { $0.hasPrefix(cmuxKeyPrefix) }
-        if continueStates.keys.contains(where: isCmux) { continueStates = continueStates.filter { !isCmux($0.key) } }
-        if limitEpisodes.keys.contains(where: isCmux) { limitEpisodes = limitEpisodes.filter { !isCmux($0.key) } }
-        if errorSkipLogged.keys.contains(where: isCmux) { errorSkipLogged = errorSkipLogged.filter { !isCmux($0.key) } }
-    }
-
-    /// Check cmux now, for Settings (opened, or a password saved), off the main
-    /// thread. With `newPassword` it first saves that to the keychain ("" removes it).
-    func refreshCmux(newPassword: String? = nil) {
-        cmuxSeen.installed = cmuxInstalled()
-        if newPassword != nil { cmuxSeen.access = nil }   // "Checking…" until the answer is in
-        let cli = runningCmuxCLI()
-        continueQueue.async { [weak self] in
-            if let new = newPassword {
-                let s = CmuxKeychain.save(new)
-                logLine(s != errSecSuccess ? "couldn't save the cmux password (OSStatus \(s))"
-                        : new.isEmpty ? "cmux password removed" : "cmux password saved")
-            }
-            let pw = CmuxKeychain.read()
-            var access: CmuxAccess?, panes = 0
-            if let cli, let pw {
-                let snap = cmuxSurfacesSnapshot(cli: cli, password: pw)
-                access = snap.access
-                panes = snap.tabs.count
-            }
-            DispatchQueue.main.async {
-                self?.cmuxSeen.passwordSaved = pw != nil
-                if let access { self?.cmuxSeen.access = access; self?.cmuxSeen.panes = panes }
-            }
-        }
-    }
-
-    /// The cmux line in Settings › Claude Code.
-    var cmuxStatus: String {
-        cmuxStatusText(installed: cmuxSeen.installed, running: runningCmuxCLI() != nil,
-                       passwordSaved: cmuxSeen.passwordSaved, access: cmuxSeen.access, panes: cmuxSeen.panes)
+        if flags.resumeLimit { resumeDueLimits(tabs, now: now, sourceRead: sourceRead, cmux: cmux) }
     }
 
     /// Runs on continueQueue. A usage-limit wall is on this tab: answer Claude
@@ -632,12 +554,21 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         if !ep.menuHandled && menuVisible(tab.text) {
             ep.menuHandled = true   // one try per episode, never keep typing into a menu
             if let choice = limitMenuChoice(tab.text) {
-                if let why = sendToTab(choice.number, tab.source, answeringMenu: true) {
-                    logLine("usage limit on \(key): option \(choice.number) not picked, nothing was typed: \(why)")
+                if cmuxScan.stuck.contains(key) {
+                    logLine("usage limit on \(key): not picking option \(choice.number), typing there changed nothing before")
                 } else {
-                    if case .claudeAutoContinue = choice { ep.claudeResumes = true }
-                    logLine("usage limit on \(key): picked option \(choice.number), "
-                            + (ep.claudeResumes ? "Claude Code continues by itself at reset" : "wait for reset"))
+                    switch sendToTab(choice.number, tab.source, purpose: .limitMenuAnswer, canTypeNow: canTypeNow,
+                                     stillWanted: { menuVisible($0) && limitMenuChoice($0) == choice }) {
+                    case .notAwake:
+                        ep.menuHandled = false   // nothing typed; try again once properly awake
+                    case .skipped(let why):
+                        logLine("usage limit on \(key): option \(choice.number) not picked, nothing was typed: \(why)")
+                    case .typed(let screen):
+                        if let screen { noteCmuxTyped(key, screen: screen) }
+                        if case .claudeAutoContinue = choice { ep.claudeResumes = true }
+                        logLine("usage limit on \(key): picked option \(choice.number), "
+                                + (ep.claudeResumes ? "Claude Code continues by itself at reset" : "wait for reset"))
+                    }
                 }
             } else {
                 let labels = menuOptions(tab.text).map { "\($0.number). \($0.label)" }.joined(separator: " | ")
@@ -664,11 +595,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
                 + (ep.claudeResumes ? "Claude Code will continue by itself" : "will type continue at \(clockStr(ep.resumeAt))"))
     }
 
-    /// Runs on continueQueue. Types "continue" for waits whose reset has
-    /// passed, and forgets episodes whose limit is no longer on screen.
-    func resumeDueLimits(_ tabs: [ScanTab], now: Date, sourceRead: (String) -> Bool) {
+    /// Runs on continueQueue. For one source's keys (`cmux` or Terminal's):
+    /// types "continue" for waits whose reset has passed, and forgets episodes
+    /// whose limit is no longer on screen.
+    func resumeDueLimits(_ tabs: [ScanTab], now: Date, sourceRead: (String) -> Bool, cmux: Bool) {
         let byKey = Dictionary(tabs.map { ($0.key, $0) }, uniquingKeysWith: { a, _ in a })
-        for key in Array(limitEpisodes.keys) {
+        let atPlainPrompt: (String) -> Bool = {
+            claudeUIVisible($0) && !menuVisible($0) && !claudeWorkingVisible($0) && !claudeAutoResumeVisible($0)
+        }
+        for key in Array(limitEpisodes.keys) where key.hasPrefix(cmuxKeyPrefix) == cmux {
             guard var ep = limitEpisodes[key] else { continue }
             let tab = byKey[key]
             let showing = tab.map { usageLimitVisible($0.text) } ?? false
@@ -680,12 +615,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
                 logLine("usage limit on \(key): reset passed while the Mac was asleep, not typing")
             } else if ep.claudeResumes {
                 logLine("usage limit on \(key): reset passed, Claude Code continues by itself")
-            } else if claudeUIVisible(text) && !menuVisible(text) && !claudeWorkingVisible(text)
-                        && !claudeAutoResumeVisible(text) {
-                if let why = sendToTab("continue", tab.source) {
-                    logLine("usage limit on \(key): reset passed, but nothing was typed: \(why)")
+            } else if atPlainPrompt(text) {
+                if cmuxScan.stuck.contains(key) {
+                    logLine("usage limit on \(key): reset passed, not typing: typing there changed nothing before")
                 } else {
-                    logLine("usage limit on \(key): reset passed → typed continue")
+                    switch sendToTab("continue", tab.source, purpose: .continuePrompt, canTypeNow: canTypeNow,
+                                     stillWanted: atPlainPrompt) {
+                    case .notAwake:
+                        ep.resumed = false   // nothing typed; try again once properly awake
+                    case .skipped(let why):
+                        logLine("usage limit on \(key): reset passed, but nothing was typed: \(why)")
+                    case .typed(let screen):
+                        if let screen { noteCmuxTyped(key, screen: screen) }
+                        logLine("usage limit on \(key): reset passed → typed continue")
+                    }
                 }
             } else {
                 logLine("usage limit on \(key): reset passed, but the screen isn't at a plain prompt, so not typing")

@@ -78,15 +78,27 @@ func sendToTerminal(_ text: String, tty: String) {
     _ = runOsascript(script)
 }
 
-/// Type text + Return into a scanned tab. nil when it went out (Terminal
-/// gives no answer, so always nil there), else why nothing was typed.
-/// `answeringMenu`: cmux's own check sees Claude Code's limit menu as an open
-/// question and refuses to type, so a menu answer (already checked by
-/// menuVisible and limitMenuChoice, as in Terminal) skips it.
-@discardableResult
-func sendToTab(_ text: String, _ source: TabSource, answeringMenu: Bool = false) -> String? {
+/// What became of one attempt to type into a tab.
+enum SendResult: Equatable {
+    case typed(screen: String?)   // cmux: the screen it was typed against (Terminal gives no answer, so nil)
+    case skipped(String)          // nothing typed, and why
+    case notAwake                 // nothing typed: the Mac isn't fully awake, or only just woke
+
+    var skipReason: String? { if case .skipped(let why) = self { return why }; return nil }
+}
+
+/// Type text + Return into a scanned tab. Right before typing, `canTypeNow`
+/// re-checks the wake state (the scan's own copy can be seconds old). For a
+/// cmux pane, sendToCmux also re-reads the screen for `stillWanted` and asks
+/// cmux what the live prompt holds; `purpose` says what the text is for.
+func sendToTab(_ text: String, _ source: TabSource, purpose: CmuxTypePurpose,
+               canTypeNow: () -> Bool, stillWanted: (String) -> Bool) -> SendResult {
     switch source {
-    case .terminal(let tty): sendToTerminal(text, tty: tty); return nil
-    case .cmux(let id): return sendToCmux(text, surfaceID: id, force: answeringMenu)
+    case .terminal(let tty):
+        guard canTypeNow() else { return .notAwake }
+        sendToTerminal(text, tty: tty)
+        return .typed(screen: nil)
+    case .cmux(let id):
+        return sendToCmux(text, surfaceID: id, purpose: purpose, canTypeNow: canTypeNow, stillWanted: stillWanted)
     }
 }
