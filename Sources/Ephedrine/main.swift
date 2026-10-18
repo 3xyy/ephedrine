@@ -1319,7 +1319,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             holding: awake.systemOn || lidShutHold(closed: closed),
             networkUp: outage.downSince == nil,
             downFor: outage.downSince.map { now.timeIntervalSince($0) }, lastGap: outage.lastGap,
-            tmuxTargets: settings.tmuxTargets.count)
+            tmuxTargets: settings.tmuxTargets.count, keepAwakeOn: settings.enabled)
     }
 
     /// The card's glyph and tile color: the menu bar's own choice of icon.

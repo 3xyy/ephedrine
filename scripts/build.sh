@@ -16,4 +16,7 @@ sleep 1
 
 mkdir -p "$HOME/Applications"
 "$HERE/bundle.sh" "$HOME/Applications"
+# A changed icon shows only once Launch Services drops its cached copy.
+touch "$HOME/Applications/Ephedrine.app"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$HOME/Applications/Ephedrine.app" || true
 open "$HOME/Applications/Ephedrine.app" && echo "✓ Relaunched Ephedrine"

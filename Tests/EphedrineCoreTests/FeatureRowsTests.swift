@@ -117,6 +117,7 @@ private func isRow(_ k: FeatureKind, _ text: String, _ tone: RowTone, _ f: (inou
 
 @Test func hints() {
     #expect(FeatureRows.hint(snap { $0.lidSetup = false }) == "Set up lid-closed mode in Settings to keep Claude going with the lid shut.")
+    #expect(FeatureRows.hint(snap { $0.lidSetup = false; $0.keepAwakeOn = false; $0.claudeCanHoldLid = false }) == nil)
     #expect(FeatureRows.hint(snap()) == "Start Claude Code and the lid can be shut without the Mac sleeping.")
     #expect(FeatureRows.hint(snap { $0.lidHolding = true }) == nil)
     #expect(FeatureRows.hint(snap { $0.claudeWorking = true }) == nil)
@@ -183,14 +184,15 @@ private func cmuxState(installed: Bool = true, running: Bool = true, password: C
 @Test func cmuxRowStateNoPasswordSetInCmux() {
     // A password is saved and sent, yet cmux asks for one: it has none set.
     #expect(cmuxState(access: .needsPassword) == .noPasswordInCmux)
-    #expect(cmuxState(access: .needsPassword, watched: false) == .noPasswordInCmux)
+    #expect(cmuxState(access: .needsPassword, watched: true) == .noPasswordInCmux)
 }
 
 @Test func cmuxRowStateNotWatched() {
     // No scan reads cmux (retries, limit waits and the Terminal busy check all off): no answer is coming.
     #expect(cmuxState(watched: true) == .checking)
     #expect(cmuxState(watched: false) == .notWatched)
-    // An answer already in (say from Settings' own check) still shows.
-    #expect(cmuxState(access: .ok, watched: false) == .connected(2))
-    #expect(cmuxState(access: .badPassword, watched: false) == .badPassword)
+    // A stale answer (say from Settings' own check) must not read as live when nothing watches.
+    #expect(cmuxState(access: .ok, watched: false) == .notWatched)
+    #expect(cmuxState(access: .badPassword, watched: false) == .notWatched)
+    #expect(cmuxState(access: .needsPassword, watched: false) == .notWatched)
 }

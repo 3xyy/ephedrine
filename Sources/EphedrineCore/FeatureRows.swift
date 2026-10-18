@@ -28,8 +28,9 @@ public func cmuxRowState(installed: Bool, running: Bool, password: CmuxSavedPass
     if !running { return .notRunning }
     if case .unreadable = password { return .unreadablePassword }
     guard case .saved = password else { return .noPassword }
+    if !watched { return .notWatched }   // nothing reads cmux, so any earlier answer is stale
     switch access {
-    case nil: return watched ? .checking : .notWatched
+    case nil: return .checking
     case .ok?: return .connected(panes)
     case .badPassword?: return .badPassword
     case .needsPassword?: return .noPasswordInCmux   // we sent one, so cmux has none set
@@ -57,13 +58,15 @@ public struct FeatureSnapshot {
     public var downFor: TimeInterval?
     public var lastGap: TimeInterval?
     public var tmuxTargets: Int
+    /// The master switch ("Keep awake") is on.
+    public var keepAwakeOn: Bool
 
     public init(lidSetup: Bool, lidHolding: Bool, lidClosed: Bool, claudeWorking: Bool, claudeCanHoldLid: Bool,
                 foreignNoSleep: Bool,
                 lowPowerNeedsRerun: Bool, lowPowerOn: LowPowerCause?, lowPowerOnLidShut: Bool, lowPowerFloor: Int,
                 muteOnShut: Bool, keyboardOffOnShut: Bool, pauseAppsOnShut: Bool, dockerRule: Bool, keyboardLightWorks: Bool,
                 cmux: CmuxRowState, hotspotSSID: String, hotspotPassword: HotspotPasswordState, holding: Bool,
-                networkUp: Bool, downFor: TimeInterval?, lastGap: TimeInterval?, tmuxTargets: Int) {
+                networkUp: Bool, downFor: TimeInterval?, lastGap: TimeInterval?, tmuxTargets: Int, keepAwakeOn: Bool = true) {
         self.lidSetup = lidSetup; self.lidHolding = lidHolding; self.lidClosed = lidClosed
         self.claudeWorking = claudeWorking; self.claudeCanHoldLid = claudeCanHoldLid; self.foreignNoSleep = foreignNoSleep
         self.lowPowerNeedsRerun = lowPowerNeedsRerun; self.lowPowerOn = lowPowerOn
@@ -72,7 +75,7 @@ public struct FeatureSnapshot {
         self.pauseAppsOnShut = pauseAppsOnShut; self.dockerRule = dockerRule; self.keyboardLightWorks = keyboardLightWorks
         self.cmux = cmux; self.hotspotSSID = hotspotSSID; self.hotspotPassword = hotspotPassword
         self.holding = holding; self.networkUp = networkUp; self.downFor = downFor; self.lastGap = lastGap
-        self.tmuxTargets = tmuxTargets
+        self.tmuxTargets = tmuxTargets; self.keepAwakeOn = keepAwakeOn
     }
 }
 
@@ -156,7 +159,7 @@ public enum FeatureRows {
     }
 
     public static func hint(_ s: FeatureSnapshot) -> String? {
-        if !s.lidSetup { return "Set up lid-closed mode in Settings to keep Claude going with the lid shut." }
+        if !s.lidSetup && s.keepAwakeOn { return "Set up lid-closed mode in Settings to keep Claude going with the lid shut." }
         // Only when it's true: keep-awake and "While Claude is working" on, no battery or heat stop.
         if !s.lidHolding && !s.claudeWorking && s.claudeCanHoldLid { return "Start Claude Code and the lid can be shut without the Mac sleeping." }
         return nil

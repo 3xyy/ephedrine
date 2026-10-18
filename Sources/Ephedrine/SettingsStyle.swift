@@ -140,6 +140,8 @@ private struct SettingsButtonBody<Label: View>: View {
             .background(RoundedRectangle(cornerRadius: banner ? 8 : 6, style: .continuous)
                 .fill(kind == .secondary ? SettingsColors.fill : SettingsColors.clayFill))
             .overlay(RoundedRectangle(cornerRadius: banner ? 8 : 6, style: .continuous)
+                .strokeBorder(Color.white.opacity(banner ? 0.35 : 0), lineWidth: 1))   // edge reaches 3:1 on the dark banner
+            .overlay(RoundedRectangle(cornerRadius: banner ? 8 : 6, style: .continuous)
                 .fill(Color.black.opacity(pressed ? 0.15 : 0)))
             .contentShape(Rectangle())
             .opacity(isEnabled ? 1 : 0.45)
