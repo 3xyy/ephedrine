@@ -300,10 +300,12 @@ public func nextWholeHours(after now: Date, count: Int, calendar: Calendar = .cu
     return (1...max(1, count)).compactMap { calendar.date(byAdding: .hour, value: $0, to: top) }
 }
 
-/// The sudoers drop-in that lets the app flip `disablesleep` without a password.
-/// Only these two exact command lines are allowed.
+/// The sudoers drop-in that lets the app flip `disablesleep` and the battery
+/// profile's Low Power Mode without a password. Only these four exact command
+/// lines are allowed.
 public func lidSudoersRule(user: String) -> String {
-    "\(user) ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1\n"
+    "\(user) ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1, "
+        + "/usr/bin/pmset -b lowpowermode 0, /usr/bin/pmset -b lowpowermode 1\n"
 }
 
 /// The next moment at `time`'s hour:minute strictly after `now` (today, else tomorrow).

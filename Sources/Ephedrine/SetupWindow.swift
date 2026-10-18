@@ -125,7 +125,7 @@ struct SetupView: View {
                         else { Button(controller.lastUsageFetch == nil ? "Allow" : "Try again") { controller.fetchUsage() } }
                     }
                     SetupRow(symbol: "laptopcomputer", title: "Lid-closed mode",
-                             detail: "Lets Claude keep working with the lid shut. Adds a one-line sudo rule that only allows “pmset disablesleep”. Asks for your password once.") {
+                             detail: "Lets Claude keep working with the lid shut. Adds a one-line sudo rule that only allows “pmset disablesleep” and Low Power Mode. Asks for your password once.") {
                         if controller.lidSetupOK { Allowed("Set up") }
                         else { Button("Set up…") { controller.setupLid() } }
                     }

@@ -10,11 +10,12 @@ import EphedrineCore
 // A MacBook sleeps on lid close no matter what power assertions are held; the
 // only switch that stops it (on battery too) is `pmset disablesleep 1`, which
 // needs root. A one-time setup installs a sudoers drop-in allowing exactly
-// `pmset -a disablesleep 0|1`, so the app can flip it with `sudo -n`.
+// `pmset -a disablesleep 0|1` and `pmset -b lowpowermode 0|1`, so the app can
+// flip them with `sudo -n`.
 //
-// disablesleep is system-wide and outlives this process, so ownership is
-// tracked with a marker file and undone on quit, by a watchdog after a crash,
-// and on next launch.
+// Both are system-wide and outlive this process, so ownership is tracked with
+// a marker file each and undone on quit, by a watchdog after a crash, and on
+// next launch.
 
 let lidSudoersPath = "/etc/sudoers.d/ephedrine"
 let lidMarkerPath = "\(home)/.claude/ephedrine/lid-sleep-disabled"   // exists ⇔ we turned it on
@@ -71,6 +72,28 @@ func batteryPercent() -> Int? {
     return nil
 }
 
+/// An internal battery is fitted, readable or not (a desktop has none).
+func hasInternalBattery() -> Bool {
+    if let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+       let list = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef],
+       list.contains(where: { (IOPSGetPowerSourceDescription(blob, $0)?.takeUnretainedValue() as? [String: Any])?[kIOPSTypeKey] as? String
+                                == kIOPSInternalBatteryType }) {
+        return true
+    }
+    let svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSmartBattery"))
+    guard svc != 0 else { return false }
+    IOObjectRelease(svc)
+    return true
+}
+
+/// Drawing from the internal battery (not the charger, not a UPS): the power
+/// source whose settings `pmset -b` changes.
+func onInternalBattery() -> Bool {
+    guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+          let type = IOPSGetProvidingPowerSourceType(blob)?.takeUnretainedValue() as String? else { return false }
+    return type == kIOPMBatteryPowerKey
+}
+
 /// Lock the screen now (what the  menu's "Lock Screen" does), via the
 /// private login.framework call. Returns false if it's missing on this macOS.
 func lockScreen() -> Bool {
@@ -117,6 +140,55 @@ func setSleepDisabled(_ on: Bool) -> Bool {
 /// Every lid on/off goes through here, in order (see SerialSwitch).
 let lidSwitch = SerialSwitch(label: "ephedrine.lid", apply: setSleepDisabled)
 
+// ── Low Power Mode ──
+//
+// `-b` is the battery profile, the one System Settings' "Only on Battery"
+// sets. isLowPowerModeEnabled shows that profile only while the Mac runs on
+// its battery, so Low Power Mode is only switched on there (BatterySettle);
+// on the charger an owner's "Only on Battery" mode would read as off.
+
+let lowPowerMarkerPath = "\(home)/.claude/ephedrine/low-power-on"   // exists ⇔ we turned it on; holds the cause
+
+/// Flip the battery profile's Low Power Mode through the sudoers rule. `-n`: never prompts.
+func setLowPowerMode(_ on: Bool) -> Bool {
+    runToolStatus("/usr/bin/sudo", ["-n", "/usr/bin/pmset", "-b", "lowpowermode", on ? "1" : "0"]) == 0
+}
+
+/// Every Low Power Mode write (on, off, the rule check) runs here, in order, so
+/// a synchronous off at sleep or quit can't be overtaken by an earlier on.
+let lowPowerQueue = DispatchQueue(label: "ephedrine.lowpower")
+
+/// Whether the sudoers rule allows switching Low Power Mode, by writing the
+/// battery profile's current value back (a no-op). nil when not on battery:
+/// isLowPowerModeEnabled is then another profile's value, and writing that to
+/// the battery's could change it. `sudo -n -l <command>` changes nothing but
+/// says yes for any admin, whose `%admin ALL` rule allows it with a password.
+func lowPowerAllowed() -> Bool? {
+    guard onInternalBattery() else { return nil }
+    return setLowPowerMode(ProcessInfo.processInfo.isLowPowerModeEnabled)
+}
+
+enum LowPowerResult { case done, skipped, failed }
+
+/// Runs on lowPowerQueue. The marker changes here, in order with every other
+/// write, so an off queued behind this one sees whether it's still ours.
+func applyLowPower(_ on: Bool) -> LowPowerResult {
+    if on {
+        // Checked again right before the write: switched on meanwhile (by its
+        // owner) or plugged in, it isn't ours to switch on.
+        if ProcessInfo.processInfo.isLowPowerModeEnabled || !onInternalBattery() {
+            try? fm.removeItem(atPath: lowPowerMarkerPath)
+            return .skipped
+        }
+        guard setLowPowerMode(true) else { try? fm.removeItem(atPath: lowPowerMarkerPath); return .failed }
+        return .done
+    }
+    guard fm.fileExists(atPath: lowPowerMarkerPath) else { return .skipped }   // not ours, or already undone
+    guard setLowPowerMode(false) else { return .failed }
+    try? fm.removeItem(atPath: lowPowerMarkerPath)
+    return .done
+}
+
 private let lidPasswordPrompt = "Ephedrine wants to keep your Mac awake with the lid closed. Enter your password once to allow it."
 
 /// Install the sudoers drop-in via the standard admin password dialog.
@@ -151,13 +223,15 @@ func uninstallLidSetup() -> String? {
 }
 
 /// A detached shell that outlives a crash: once this process is gone (and no
-/// new Ephedrine has taken over), it un-pauses apps and turns disablesleep back off.
+/// new Ephedrine has taken over), it un-pauses apps and turns disablesleep and
+/// our Low Power Mode back off.
 final class LidWatchdog {
     private var proc: Process?
     func start() {
         if proc?.isRunning == true { return }
         let marker = shellQuoted(lidMarkerPath)
         let pids = shellQuoted(pausedPidsPath)
+        let lowPower = shellQuoted(lowPowerMarkerPath)
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/sh")
         p.arguments = ["-c", """
@@ -165,6 +239,7 @@ final class LidWatchdog {
             /usr/bin/pgrep -xq Ephedrine && exit 0
             [ -s \(pids) ] && /bin/kill -CONT $(/bin/cat \(pids)) 2>/dev/null
             [ -f \(marker) ] && /usr/bin/sudo -n /usr/bin/pmset -a disablesleep 0 && /bin/rm -f \(marker)
+            [ -f \(lowPower) ] && /usr/bin/sudo -n /usr/bin/pmset -b lowpowermode 0 && /bin/rm -f \(lowPower)
             """]
         p.standardInput = FileHandle.nullDevice
         p.standardOutput = FileHandle.nullDevice
@@ -178,10 +253,10 @@ final class LidWatchdog {
 
 extension AppController {
 
-    /// Called from evaluate() every tick.
-    func updateLidMode(claudeBusy: Bool) {
+    /// Called from evaluate() every tick. `battery`: the percent after
+    /// BatteryReadMisses, so a battery that can't be read stops it too.
+    func updateLidMode(claudeBusy: Bool, battery: Int?) {
         let closed = lidIsClosed()
-        let battery = batteryPercent()
         let thermal = ProcessInfo.processInfo.thermalState
         var inputs = LidInputs(
             whileClaude: settings.lidWhileClaude, claudeBusy: claudeBusy, lidClosed: closed,
@@ -216,7 +291,7 @@ extension AppController {
             switch g {
             case .hot:        why = "Your Mac is running \(thermalStateText(thermal).lowercased())"
             case .unplugged:  why = "Your Mac is on battery"
-            case .lowBattery: why = "Battery is at \(battery ?? 0)%"
+            case .lowBattery: why = battery == 0 && batteryPercent() == nil ? "The battery level can't be read" : "Battery is at \(battery ?? 0)%"
             }
             logLine("lid-closed mode stopped: \(g.rawValue)")
             // On battery with "Only when plugged in" there's nothing to tell while you're at the Mac.
@@ -324,12 +399,16 @@ extension AppController {
         }
     }
 
-    /// The watchdog undoes disablesleep and un-pauses apps if Ephedrine dies.
-    /// It runs while either is ours, not only in lid mode.
+    /// The watchdog undoes disablesleep and Low Power Mode and un-pauses apps
+    /// if Ephedrine dies. It runs while any of them is ours, not only in lid mode.
     func updateWatchdog() {
         let pids = (try? String(contentsOfFile: pausedPidsPath, encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if fm.fileExists(atPath: lidMarkerPath) || !pids.isEmpty { lidWatchdog.start() } else { lidWatchdog.stop() }
+        if fm.fileExists(atPath: lidMarkerPath) || fm.fileExists(atPath: lowPowerMarkerPath) || !pids.isEmpty {
+            lidWatchdog.start()
+        } else {
+            lidWatchdog.stop()
+        }
     }
 
     private func flipLid(_ on: Bool) {
@@ -383,11 +462,15 @@ extension AppController {
             logLine(closed ? "lid pause turned off, resumed \(n) apps" : "lid opened, resumed \(n) apps")
             return
         }
-        guard settings.lidPauseApps, closed, lidActive, !awayMode,
-              fm.fileExists(atPath: lidMarkerPath),   // our lid mode, not a by-hand disablesleep
-              !externalDisplayActive() else { return }
+        guard settings.lidPauseApps, !awayMode, lidShutHold(closed: closed) else { return }
         suspendApps(); persistAwayState(); lidPaused = true
         logLine("lid shut, paused \(pausedAppCount) apps\(pausedList)")
+    }
+
+    /// The lid is shut and our lid mode (not a by-hand disablesleep) keeps the
+    /// Mac awake, with no external display (a desk setup is still in use).
+    func lidShutHold(closed: Bool) -> Bool {
+        closed && lidActive && fm.fileExists(atPath: lidMarkerPath) && !externalDisplayActive()
     }
 
     /// With the lid shut in lid-closed mode the Mac never sleeps, so macOS never
@@ -405,6 +488,7 @@ extension AppController {
     /// doSleep(): macOS refuses to sleep while disablesleep is on (e.g. the
     /// idle countdown ending inside the post-Claude linger), so switch it off first.
     func releaseLidForSleep() {
+        releaseLowPower("sleeping")
         // No sleepIsDisabled() shortcut: an "on" may still be in flight on lidSwitch.
         guard fm.fileExists(atPath: lidMarkerPath) else { return }
         lidFlipGeneration += 1   // supersedes any flip still finishing
@@ -424,6 +508,113 @@ extension AppController {
             try? fm.removeItem(atPath: lidMarkerPath)
             logLine("lid-closed mode OFF (quitting)")
         }   // else the watchdog retries once we're gone
+    }
+
+    // MARK: Low Power Mode
+
+    /// Lid setup from before Low Power Mode was in the rule: the menu and the
+    /// Lid pane offer to re-run it.
+    var lowPowerSetupNeeded: Bool { lidSetupOK && lowPowerRuleOK == false }
+
+    /// Called from evaluate() every tick, once keep-awake is decided.
+    func updateLowPower(holding: Bool, percent: Int?) {
+        let settled = batterySettle.step(onBattery: onInternalBattery(), now: Date())
+        if !lidSetupOK { lowPowerRuleOK = nil }   // asked again once setup is back
+        guard !lidApplying else { return }        // a lid flip or a setup removal is running
+        checkLowPowerRule(settled: settled)
+        guard !lowPowerApplying, !lowPowerChecking, Date() >= lowPowerRetryAfter else { return }
+        let cause = lowPowerCause(holding: holding, lidHold: lidShutHold(closed: lidIsClosed()),
+                                  onLidShut: settings.lowPowerOnLidShut, onBattery: !onACPower(), percent: percent,
+                                  floor: settings.lowPowerFloor, thermal: ProcessInfo.processInfo.thermalState)
+        switch lowPowerStep(cause: cause, modeOn: ProcessInfo.processInfo.isLowPowerModeEnabled,
+                            ours: fm.fileExists(atPath: lowPowerMarkerPath)) {
+        case .turnOn(let c)?:
+            // Only where isLowPowerModeEnabled is the battery profile that `-b`
+            // writes, and once the rule is known to allow it.
+            guard settled, lowPowerRuleOK == true else { return }
+            flipLowPower(true, cause: c)
+        case .turnOff?:
+            flipLowPower(false, cause: nil)   // also after a crash: the marker is still there at launch
+        case nil:
+            break
+        }
+    }
+
+    /// Asks whether the rule allows Low Power Mode: at launch, after setup, and
+    /// once a minute while it doesn't. Only on battery (see lowPowerAllowed).
+    private func checkLowPowerRule(settled: Bool) {
+        guard lidSetupOK, settled, !lowPowerChecking, !lowPowerApplying else { return }
+        guard lowPowerRuleOK == nil || (lowPowerRuleOK == false && Date().timeIntervalSince(lowPowerCheckedAt) >= 60) else { return }
+        lowPowerChecking = true
+        lowPowerQueue.async { [weak self] in
+            let ok = lowPowerAllowed()
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.lowPowerChecking = false
+                self.lowPowerCheckedAt = Date()
+                // Plugged in meanwhile, or setup changing: ask again later.
+                guard let ok = ok, self.lidSetupOK, !self.lidApplying else { return }
+                if ok != self.lowPowerRuleOK {
+                    logLine(ok ? "Low Power Mode: lid setup allows switching it"
+                               : "Low Power Mode: lid setup predates it, re-run lid setup to allow it")
+                }
+                self.lowPowerRuleOK = ok
+            }
+        }
+    }
+
+    private func flipLowPower(_ on: Bool, cause: LowPowerCause?) {
+        let was = (try? String(contentsOfFile: lowPowerMarkerPath, encoding: .utf8)).flatMap(LowPowerCause.init(rawValue:))
+        if on {
+            // Before the switch, so a crash mid-flip is still cleaned up. No
+            // record, no switch: nothing could turn it off again.
+            guard fm.createFile(atPath: lowPowerMarkerPath, contents: Data((cause?.rawValue ?? "").utf8)) else {
+                logLine("Low Power Mode: couldn't write \(lowPowerMarkerPath), leaving it off")
+                lowPowerRetryAfter = Date().addingTimeInterval(60)
+                return
+            }
+            updateWatchdog()
+        }
+        lowPowerApplying = true
+        lowPowerGeneration += 1
+        let generation = lowPowerGeneration
+        lowPowerQueue.async { [weak self] in
+            let result = applyLowPower(on)
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.lowPowerApplying = false
+                self.updateWatchdog()
+                // A synchronous off (sleep, quit, removing setup) ran after this one and settled it.
+                guard generation == self.lowPowerGeneration else { return }
+                switch result {
+                case .done:
+                    logLine(on ? "Low Power Mode ON (\(cause?.rawValue ?? "?"))"
+                               : "Low Power Mode OFF" + (was.map { " (was on for \($0.rawValue))" } ?? ""))
+                case .skipped:
+                    if on { logLine("Low Power Mode: already on or plugged in, left it alone") }
+                case .failed:
+                    logLine("Low Power Mode: `sudo pmset` failed, retrying in 1 min")
+                    self.lowPowerRetryAfter = Date().addingTimeInterval(60)
+                    self.lidSetupOK = lidSetupInstalled()
+                    if on { self.lowPowerRuleOK = nil }   // ask the rule again before the next try
+                }
+            }
+        }
+    }
+
+    /// Sleep and quit: switch our Low Power Mode off now, queued behind any
+    /// flip still running. The marker is written before an "on" is queued, so
+    /// without it nothing of ours is on or on its way.
+    func releaseLowPower(_ why: String) {
+        guard fm.fileExists(atPath: lowPowerMarkerPath) else { return }
+        lowPowerGeneration += 1   // supersedes any flip still finishing
+        let result = lowPowerQueue.sync { applyLowPower(false) }
+        updateWatchdog()
+        switch result {
+        case .done:    logLine("Low Power Mode OFF (\(why))")
+        case .failed:  logLine("Low Power Mode: couldn't switch it off (\(why)), the watchdog retries")
+        case .skipped: break
+        }
     }
 
     func lidNotify(_ title: String, _ body: String) {
@@ -454,6 +645,7 @@ extension AppController {
                 }
                 logLine("lid-closed setup installed (\(lidSudoersPath))")
                 self.lidRetryAfter = .distantPast
+                self.lowPowerRuleOK = nil   // ask the new rule about Low Power Mode
                 let login = SMAppService.mainApp.status == .enabled
                 self.lidNotify("Lid-closed mode is ready",
                     "Close the lid while Claude works and it keeps going."
@@ -465,16 +657,23 @@ extension AppController {
 
     @objc func removeLidSetup() {
         lidState.session = nil
-        lidApplying = true
+        lidApplying = true   // also holds Low Power Mode changes and rule checks (updateLowPower)
+        lowPowerRuleOK = nil
+        lowPowerGeneration += 1   // supersedes any flip still finishing
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             // Off in order with any flip still running, but ask for the password
             // OFF the switch queue: quit and doSleep() wait on lidSwitch, and a
-            // dialog left open must never block them.
+            // dialog left open must never block them. Low Power Mode first: once
+            // the rule is gone nothing can switch it off.
+            let lowPower = lowPowerQueue.sync { applyLowPower(false) }
             if fm.fileExists(atPath: lidMarkerPath) { lidSwitch.setSync(false) }
             let err = uninstallLidSetup()
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.lidApplying = false
+                if lowPower == .done { logLine("Low Power Mode OFF (removing lid setup)") }
+                if lowPower == .failed { logLine("Low Power Mode: couldn't switch it off before removing lid setup") }
+                self.updateWatchdog()
                 if !sleepIsDisabled() { try? fm.removeItem(atPath: lidMarkerPath); self.updateWatchdog() }
                 self.lidSetupOK = lidSetupInstalled()
                 logLine(err.map { "lid-closed setup removal failed: \($0)" } ?? "lid-closed setup removed")

@@ -59,10 +59,12 @@ Besides the usage meter, the only network request is an update check: every 6 ho
 A MacBook sleeps when the lid closes regardless of power assertions. The one switch that stops it is `pmset disablesleep`, which needs root, so lid-closed setup asks for your password once and installs `/etc/sudoers.d/ephedrine`, checked with `visudo`, containing exactly:
 
 ```
-you ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1
+you ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset -b lowpowermode 0, /usr/bin/pmset -b lowpowermode 1
 ```
 
-`disablesleep` is system-wide and outlives the app, so Ephedrine switches it off when it quits, a watchdog process switches it off if the app crashes, and the next launch cleans up as well. Turning on Open at login makes sure that last step runs.
+The last two let it turn Low Power Mode on for the battery while it keeps the Mac awake with the lid shut, on low battery or when the Mac runs hot. It only turns off a Low Power Mode it turned on itself. Setups from older versions keep working for the lid; the menu offers to re-run setup to add Low Power Mode.
+
+`disablesleep` and Low Power Mode are system-wide and outlive the app, so Ephedrine switches its own off when it quits, a watchdog process switches them off if the app crashes, and the next launch cleans up as well. Turning on Open at login makes sure that last step runs.
 
 The app is ad-hoc signed because I don't have an Apple Developer ID. macOS ties Terminal control and the keychain's Always Allow to the exact build, so after an upgrade it asks for those two again.
 

@@ -685,7 +685,7 @@ private func stuck(_ w: inout LidSleepWatch, at t: TimeInterval, closed: Bool = 
 
 @Test func sudoersRuleIsNarrow() {
     #expect(lidSudoersRule(user: "uv")
-            == "uv ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1\n")
+            == "uv ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset -b lowpowermode 0, /usr/bin/pmset -b lowpowermode 1\n")
 }
 
 @Test func shellQuoting() {
@@ -1029,6 +1029,19 @@ private func freshDefaults() -> UserDefaults {
     #expect(AppSettings(defaults: d).alwaysPause == ["com.tinyspeck.slackmacgap"])
     d.set(["a.b", "a.b", "c.d"], forKey: "alwaysPause")
     #expect(AppSettings(defaults: d).alwaysPause == ["a.b", "c.d"])
+}
+
+@Test func lowPowerSettingsDefaultAndPersist() {
+    let d = freshDefaults()
+    let s = AppSettings(defaults: d)
+    #expect(s.lowPowerOnLidShut && s.lowPowerFloor == 40)
+    var changed: [String] = []
+    s.onChange = { changed.append($0) }
+    s.lowPowerOnLidShut = false
+    s.lowPowerFloor = 0
+    #expect(changed == ["lowPowerOnLidShut", "lowPowerFloor"])
+    let b = AppSettings(defaults: d)
+    #expect(!b.lowPowerOnLidShut && b.lowPowerFloor == 0)
 }
 
 @Test func nextOccurrenceRollsToTomorrow() {

@@ -219,6 +219,11 @@ struct SleepPane: View {
                 Text("Only on the charger").tag(lidOnlyPluggedIn)
             }
             Tip("Covers everything Ephedrine keeps awake for: Claude, “I'm leaving”, Stay awake and the lid. At the limit it lets the Mac sleep until you plug it in, so the battery never runs flat. Above it, usage-limit waits and “Also keep awake while…” get an hour at most on battery.")
+            Picker("Low Power Mode below", selection: $settings.lowPowerFloor) {
+                ForEach([50, 40, 30], id: \.self) { Text("\($0)%").tag($0) }
+                Text("Off").tag(0)
+            }
+            Tip("While Ephedrine keeps the Mac awake on battery, it turns Low Power Mode on below this level or when the Mac runs hot, and off again once that's over. If you turned it on yourself, it stays on. Needs lid-closed setup.")
         }
     }
 }

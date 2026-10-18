@@ -64,7 +64,7 @@ struct LidPane: View {
     var body: some View {
         if !controller.lidSetupOK {
                 Section {
-                    Text("A MacBook sleeps the moment its lid closes, even while Claude is working. Setup installs a one-line rule (\(lidSudoersPath)) that lets Ephedrine switch macOS's “disable sleep” setting on and off without a password. Nothing else gets admin rights.")
+                    Text("A MacBook sleeps the moment its lid closes, even while Claude is working. Setup installs a one-line rule (\(lidSudoersPath)) that lets Ephedrine switch macOS's “disable sleep” setting and Low Power Mode on and off without a password. Nothing else gets admin rights.")
                     Button("Set up lid-closed mode…") { controller.setupLid() }
                     Tip("Asks for your password once.")
                 }
@@ -86,6 +86,14 @@ struct LidPane: View {
                     Toggle(isOn: $settings.lidPauseApps) {
                         Text("Pause other apps while it's shut")
                         Tip("Like “I'm leaving”. They resume when you open the lid. Not with an external display attached.")
+                    }
+                    Toggle(isOn: $settings.lowPowerOnLidShut) {
+                        Text("Low Power Mode while the lid is shut")
+                        Tip("On battery, turns Low Power Mode on while the Mac stays awake with the lid shut, and off again when the lid opens. If you turned it on yourself, it stays on.")
+                    }
+                    if controller.lowPowerSetupNeeded {
+                        Button("Update lid setup…") { controller.setupLid() }
+                        Tip("Adds Low Power Mode to what Ephedrine may switch. Asks for your password once.")
                     }
                 }
                 Section("Sleep anyway, even mid-task") {
