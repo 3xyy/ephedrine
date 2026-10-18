@@ -166,6 +166,14 @@ public func lidGuardActive(_ s: LidState, _ i: LidInputs) -> Bool {
     lidGuard(i) != nil || s.tripped != nil
 }
 
+/// Whether Claude working would keep the Mac awake with the lid shut right
+/// now: keep-awake (`enabled`) and "While Claude is working" (`i.whileClaude`)
+/// on, no battery or heat stop latched, and no lid limit in the way, now or
+/// tripped earlier ("Only on the charger" on battery among them).
+public func claudeCanHoldLid(enabled: Bool, batteryStopped: Bool, heatStopped: Bool, _ s: LidState, _ i: LidInputs) -> Bool {
+    enabled && i.whileClaude && !batteryStopped && !heatStopped && !lidGuardActive(s, i)
+}
+
 // ── Remote Control check-ins ──
 //
 // `claude remote-control` asks Anthropic for new messages; nothing can reach a
@@ -396,9 +404,13 @@ public func passwordFieldPlaceholder(_ state: SavedPasswordState, empty: String)
     state == .found ? "Saved (hidden). Type a new one to replace it" : empty
 }
 
-/// The "Saved" label shows for 4 seconds after Save.
+/// How far Settings' clock can trail a Save: a tick (once a second), plus room for a late one.
+public let settingsClockLag: TimeInterval = 1.5
+
+/// The "Saved" label shows for 4 seconds after Save. `now` is Settings' clock,
+/// which can be up to a tick behind `savedAt`, so the label still shows at once.
 public func savedLabelVisible(savedAt: Date?, now: Date) -> Bool {
     guard let savedAt else { return false }
     let d = now.timeIntervalSince(savedAt)
-    return d >= 0 && d < 4
+    return d >= -settingsClockLag && d < 4
 }

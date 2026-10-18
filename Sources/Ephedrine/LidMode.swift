@@ -560,6 +560,17 @@ extension AppController {
         updateWatchdog()
     }
 
+    /// Claude working would keep the Mac awake with the lid shut right now
+    /// (claudeCanHoldLid in Lid.swift), from the same inputs as updateLidMode.
+    var claudeCanHoldLid: Bool {
+        let inputs = LidInputs(
+            whileClaude: settings.lidWhileClaude, claudeBusy: false, lidClosed: lidClosedNow(),
+            onBattery: !onACPower(), batteryPercent: batteryPercent(), batteryFloor: settings.batteryFloor,
+            hot: lidTooHot(ProcessInfo.processInfo.thermalState, limit: settings.lidHeatLimit), now: Date())
+        return EphedrineCore.claudeCanHoldLid(enabled: settings.enabled, batteryStopped: batteryStop.stopped,
+                                              heatStopped: heatStop.stopped, lidState, inputs)
+    }
+
     /// The lid is shut and our lid mode (not a by-hand disablesleep) keeps the
     /// Mac awake, with no external display (a desk setup is still in use).
     func lidShutHold(closed: Bool) -> Bool {
@@ -613,9 +624,14 @@ extension AppController {
     /// Lid setup from before Low Power Mode was in the rule: the menu and the
     /// Lid pane offer to re-run it, on any power source. The stamp says which
     /// rule was installed; the battery check (lowPowerRuleOK) only confirms it.
+    /// The stamp is the cached copy (refreshLidRuleStamp), so a menu open reads no file for it.
     var lowPowerSetupNeeded: Bool {
-        lidSetupOK && (lidRuleNeedsRerun(setupInstalled: lidSetupOK, stamp: readLidRuleStamp()) || lowPowerRuleOK == false)
+        lidSetupOK && (lidRuleNeedsRerun(setupInstalled: lidSetupOK, stamp: lidRuleStamp) || lowPowerRuleOK == false)
     }
+
+    /// Re-read lid-rule-version: at launch, after setup, after removing it, and
+    /// after the battery check proves the rule.
+    func refreshLidRuleStamp() { lidRuleStamp = readLidRuleStamp() }
 
     /// Called from evaluate() every tick, once keep-awake is decided.
     func updateLowPower(holding: Bool, percent: Int?) {
@@ -690,6 +706,13 @@ extension AppController {
                 }
                 self.lowPowerRuleOK = ok
                 self.lowPowerCheckFailures = ok ? 0 : self.lowPowerCheckFailures + 1
+                // The rule allows Low Power Mode, the one thing version 2 added: mark
+                // the setup current, so an old stamp can't ask for a re-run that isn't needed.
+                if ok && lidRuleNeedsRerun(setupInstalled: self.lidSetupOK, stamp: self.lidRuleStamp) {
+                    writeLidRuleStamp()
+                    self.refreshLidRuleStamp()
+                    logLine("Low Power Mode: the lid rule allows it, marked lid setup as current")
+                }
             }
         }
     }
@@ -778,6 +801,7 @@ extension AppController {
                 }
                 logLine("lid-closed setup installed (\(lidSudoersPath))")
                 writeLidRuleStamp()
+                self.refreshLidRuleStamp()
                 self.lidRetryAfter = .distantPast
                 self.lowPowerRuleOK = nil   // ask the new rule about Low Power Mode, now
                 self.lowPowerCheckFailures = 0
@@ -812,6 +836,7 @@ extension AppController {
                 if !sleepIsDisabled() { try? fm.removeItem(atPath: lidMarkerPath); self.updateWatchdog() }
                 self.lidSetupOK = lidSetupInstalled()
                 if !self.lidSetupOK { removeLidRuleStamp() }
+                self.refreshLidRuleStamp()
                 logLine(err.map { "lid-closed setup removal failed: \($0)" } ?? "lid-closed setup removed")
                 self.evaluate()
             }

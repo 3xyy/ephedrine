@@ -347,7 +347,7 @@ extension AppController {
         if s == errSecSuccess { cmuxSeen.password = password.isEmpty ? .none : .saved }   // the line under the field follows at once
         logLine(s != errSecSuccess ? "couldn't save the cmux password (OSStatus \(s))"
                 : password.isEmpty ? "cmux password removed" : "cmux password saved")
-        cmuxSeen.access = nil   // "Checking…" until the answer is in
+        cmuxSeen.access = nil   // "Checking…" (with no scan running, "Not watched") until the answer is in
         refreshCmux()
         return s == errSecSuccess
     }
@@ -363,17 +363,9 @@ extension AppController {
 
     /// The cmux row in the menu card; also puts the dot on Settings' Claude Code tab.
     var cmuxRowState: CmuxRowState {
-        if !cmuxSeen.installed { return .notInstalled }
-        if runningCmuxCLI() == nil { return .notRunning }
-        if case .unreadable = cmuxSeen.password { return .unreadablePassword }
-        guard case .saved = cmuxSeen.password else { return .noPassword }
-        switch cmuxSeen.access {
-        case nil: return .checking
-        case .ok?: return .connected(cmuxSeen.panes)
-        case .badPassword?: return .badPassword
-        case .needsPassword?: return .noPassword
-        default: return .failed   // denied, failed, gone
-        }
+        EphedrineCore.cmuxRowState(installed: cmuxSeen.installed, running: runningCmuxCLI() != nil,
+                                   password: cmuxSeen.password, access: cmuxSeen.access, panes: cmuxSeen.panes,
+                                   watched: terminalScanOn)
     }
 
     /// The cmux line in Settings › Claude Code.

@@ -25,3 +25,13 @@ import Foundation
     #expect(savedLabelVisible(savedAt: t, now: t.addingTimeInterval(3.9)) == true)
     #expect(savedLabelVisible(savedAt: t, now: t.addingTimeInterval(4)) == false)
 }
+
+@Test func savedLabelShowsThroughClockLag() {
+    // Settings' clock ticks once a second, so right after Save its time can be
+    // up to a tick before the save: the label shows at once anyway.
+    let t = Date(timeIntervalSince1970: 1000)
+    #expect(savedLabelVisible(savedAt: t, now: t) == true)
+    #expect(savedLabelVisible(savedAt: t, now: t.addingTimeInterval(-0.9)) == true)
+    #expect(savedLabelVisible(savedAt: t, now: t.addingTimeInterval(-1.4)) == true)
+    #expect(savedLabelVisible(savedAt: t, now: t.addingTimeInterval(-2)) == false)
+}

@@ -33,7 +33,6 @@ extension AppController {
     /// The Settings tabs with something to fix or see (SettingsAttention has the rules).
     var settingsAttention: Set<SettingsPane> {
         let a = SettingsAttention.evaluate(lidSetupOK: lidSetupOK, lowPowerSetupNeeded: lowPowerSetupNeeded,
-                                           keepAwakeOn: settings.enabled, lidWhileClaude: settings.lidWhileClaude,
                                            cmux: cmuxRowState, updateAvailable: latestRelease != nil)
         var out: Set<SettingsPane> = []
         if a.lid { out.insert(.lid) }
@@ -253,8 +252,8 @@ struct SleepPane: View {
     let now: Date   // re-renders each second, so the display-off time from System Settings shows up
 
     var body: some View {
-        let banner = SettingsBanners.sleep(finishMode: settings.finishMode, waitSeconds: Int(controller.effectiveGraceSeconds()),
-                                           powerMode: settings.powerMode)
+        let banner = SettingsBanners.sleep(enabled: settings.enabled, finishMode: settings.finishMode,
+                                           waitSeconds: Int(controller.effectiveGraceSeconds()), powerMode: settings.powerMode)
         VStack(alignment: .leading, spacing: 16) {
             SettingsBanner(symbol: SettingsPane.sleep.symbol, headline: banner.headline, sentence: banner.sentence)
             SettingsColumns {

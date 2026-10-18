@@ -13,15 +13,42 @@ public struct FeatureRow: Equatable {
     }
 }
 
-public enum CmuxRowState: Equatable { case notInstalled, notRunning, noPassword, unreadablePassword, checking, badPassword, failed, connected(Int) }
+/// `noPasswordInCmux`: a password is saved here but cmux has none set.
+/// `notWatched`: nothing reads cmux (no retries, limit waits or busy check), so no answer is coming.
+public enum CmuxRowState: Equatable {
+    case notInstalled, notRunning, noPassword, unreadablePassword, checking, badPassword, noPasswordInCmux, notWatched, failed, connected(Int)
+}
+
+/// The cmux row's state from what Ephedrine last saw. `access` is the last
+/// check's answer (nil: none yet); `watched` says a scan reads cmux, so an
+/// answer is on its way.
+public func cmuxRowState(installed: Bool, running: Bool, password: CmuxSavedPassword, access: CmuxAccess?,
+                         panes: Int, watched: Bool) -> CmuxRowState {
+    if !installed { return .notInstalled }
+    if !running { return .notRunning }
+    if case .unreadable = password { return .unreadablePassword }
+    guard case .saved = password else { return .noPassword }
+    switch access {
+    case nil: return watched ? .checking : .notWatched
+    case .ok?: return .connected(panes)
+    case .badPassword?: return .badPassword
+    case .needsPassword?: return .noPasswordInCmux   // we sent one, so cmux has none set
+    default: return .failed   // denied, failed, gone
+    }
+}
 
 public struct FeatureSnapshot {
-    public var lidSetup: Bool, lidHolding: Bool, lidClosed: Bool, claudeWorking: Bool, stayAwake: Bool
+    /// `claudeCanHoldLid`: Claude working would keep the Mac awake with the lid
+    /// shut right now (see claudeCanHoldLid in Lid.swift). `foreignNoSleep`:
+    /// sleep is disabled, but not by Ephedrine.
+    public var lidSetup: Bool, lidHolding: Bool, lidClosed: Bool, claudeWorking: Bool, claudeCanHoldLid: Bool
+    public var foreignNoSleep: Bool
     public var lowPowerNeedsRerun: Bool
     public var lowPowerOn: LowPowerCause?
     public var lowPowerOnLidShut: Bool
     public var lowPowerFloor: Int
     public var muteOnShut: Bool, keyboardOffOnShut: Bool, pauseAppsOnShut: Bool, dockerRule: Bool
+    public var keyboardLightWorks: Bool   // false: this macOS refuses the keyboard light, so it's left alone
     public var cmux: CmuxRowState
     public var hotspotSSID: String
     public var hotspotPassword: HotspotPasswordState
@@ -31,17 +58,18 @@ public struct FeatureSnapshot {
     public var lastGap: TimeInterval?
     public var tmuxTargets: Int
 
-    public init(lidSetup: Bool, lidHolding: Bool, lidClosed: Bool, claudeWorking: Bool, stayAwake: Bool,
+    public init(lidSetup: Bool, lidHolding: Bool, lidClosed: Bool, claudeWorking: Bool, claudeCanHoldLid: Bool,
+                foreignNoSleep: Bool,
                 lowPowerNeedsRerun: Bool, lowPowerOn: LowPowerCause?, lowPowerOnLidShut: Bool, lowPowerFloor: Int,
-                muteOnShut: Bool, keyboardOffOnShut: Bool, pauseAppsOnShut: Bool, dockerRule: Bool,
+                muteOnShut: Bool, keyboardOffOnShut: Bool, pauseAppsOnShut: Bool, dockerRule: Bool, keyboardLightWorks: Bool,
                 cmux: CmuxRowState, hotspotSSID: String, hotspotPassword: HotspotPasswordState, holding: Bool,
                 networkUp: Bool, downFor: TimeInterval?, lastGap: TimeInterval?, tmuxTargets: Int) {
         self.lidSetup = lidSetup; self.lidHolding = lidHolding; self.lidClosed = lidClosed
-        self.claudeWorking = claudeWorking; self.stayAwake = stayAwake
+        self.claudeWorking = claudeWorking; self.claudeCanHoldLid = claudeCanHoldLid; self.foreignNoSleep = foreignNoSleep
         self.lowPowerNeedsRerun = lowPowerNeedsRerun; self.lowPowerOn = lowPowerOn
         self.lowPowerOnLidShut = lowPowerOnLidShut; self.lowPowerFloor = lowPowerFloor
         self.muteOnShut = muteOnShut; self.keyboardOffOnShut = keyboardOffOnShut
-        self.pauseAppsOnShut = pauseAppsOnShut; self.dockerRule = dockerRule
+        self.pauseAppsOnShut = pauseAppsOnShut; self.dockerRule = dockerRule; self.keyboardLightWorks = keyboardLightWorks
         self.cmux = cmux; self.hotspotSSID = hotspotSSID; self.hotspotPassword = hotspotPassword
         self.holding = holding; self.networkUp = networkUp; self.downFor = downFor; self.lastGap = lastGap
         self.tmuxTargets = tmuxTargets
@@ -55,7 +83,9 @@ public enum FeatureRows {
             out.append(FeatureRow(kind: k, label: label, text: text, tone: tone))
         }
 
-        if !s.lidSetup { add(.lid, "Lid", "Sleeps when shut", .dim) }
+        // Someone else's `pmset disablesleep`: it stays awake shut, setup or not.
+        if s.foreignNoSleep { add(.lid, "Lid", "Stays awake when shut (set outside Ephedrine)", .warn) }
+        else if !s.lidSetup { add(.lid, "Lid", "Sleeps when shut", .dim) }
         else if s.lidClosed { add(.lid, "Lid", "Shut, on an external display", .normal) }
         else if s.lidHolding { add(.lid, "Lid", s.claudeWorking ? "Shut it, Claude keeps going" : "Shut it, stays awake", .active) }
         else { add(.lid, "Lid", "Sleeps if you shut it now", .normal) }
@@ -81,7 +111,7 @@ public enum FeatureRows {
 
             var parts: [String] = []
             if s.muteOnShut { parts.append("mutes") }
-            if s.keyboardOffOnShut { parts.append("keys dark") }
+            if s.keyboardOffOnShut && s.keyboardLightWorks { parts.append("keys dark") }
             switch (s.pauseAppsOnShut, s.dockerRule) {
             case (true, true): parts.append("apps and Docker paused")
             case (true, false): parts.append("apps paused")
@@ -99,7 +129,9 @@ public enum FeatureRows {
         case .unreadablePassword: add(.cmux, "cmux", "Saved password can't be read", .warn)
         case .checking: add(.cmux, "cmux", "Checking…", .dim)
         case .badPassword: add(.cmux, "cmux", "Password not accepted", .warn)
-        case .failed: add(.cmux, "cmux", "Not connected", .dim)
+        case .noPasswordInCmux: add(.cmux, "cmux", "Set a password in cmux's Automation settings", .dim)
+        case .notWatched: add(.cmux, "cmux", "Not watched", .dim)
+        case .failed: add(.cmux, "cmux", "Not connected", .warn)
         case .connected(let n):
             let panes = n == 1 ? "1 pane" : "\(n) panes"
             add(.cmux, "cmux", s.claudeWorking ? "Watching \(panes)" : "Connected, \(panes)", .ok)
@@ -107,7 +139,7 @@ public enum FeatureRows {
 
         if s.hotspotSSID.isEmpty { add(.hotspot, "Hotspot", "Not set up", .dim) }
         else if s.hotspotPassword == .unreadable { add(.hotspot, "Hotspot", "Password needs re-entering", .warn) }
-        else if s.hotspotPassword == .missing { add(.hotspot, "Hotspot", "Add its password in Settings", .dim) }
+        else if s.hotspotPassword == .missing { add(.hotspot, "Hotspot", "Add its password in Settings", .warn) }
         else if s.holding { add(.hotspot, "Hotspot", "Joins \(s.hotspotSSID) if Wi-Fi drops", .active) }
         else { add(.hotspot, "Hotspot", "Ready: \(s.hotspotSSID)", .normal) }
 
@@ -125,7 +157,8 @@ public enum FeatureRows {
 
     public static func hint(_ s: FeatureSnapshot) -> String? {
         if !s.lidSetup { return "Set up lid-closed mode in Settings to keep Claude going with the lid shut." }
-        if !s.lidHolding && !s.claudeWorking { return "Start Claude Code and the lid can be shut without the Mac sleeping." }
+        // Only when it's true: keep-awake and "While Claude is working" on, no battery or heat stop.
+        if !s.lidHolding && !s.claudeWorking && s.claudeCanHoldLid { return "Start Claude Code and the lid can be shut without the Mac sleeping." }
         return nil
     }
 }

@@ -31,6 +31,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     // persisted preferences (saved to UserDefaults as they change)
     let settings = AppSettings(defaults: .standard)
     var autoContinue: Bool { settings.autoContinueMode != .off }
+    /// Something reads Terminal and cmux every few ticks: retries, limit waits or the busy check.
+    var terminalScanOn: Bool { autoContinue || settings.autoResumeLimit || settings.keepAwakeClaudeWorking }
 
     var manualKeepAwake = false
     var claudeWorkingCached = false
@@ -73,6 +75,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var lowPowerGeneration = 0                      // newest Low Power Mode request (stale completions are ignored)
     var lowPowerRetryAfter = Date.distantPast
     var lowPowerRuleOK: Bool?                       // the sudoers rule allows Low Power Mode; nil = not asked yet
+    var lidRuleStamp: String?                       // lid-rule-version as last read (refreshLidRuleStamp), not read per menu open
     var lowPowerChecking = false
     var lowPowerCheckedAt = Date.distantPast
     var lowPowerCheckFailures = 0                   // rule checks that said no in a row (lowPowerRecheckDelay)
@@ -223,6 +226,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         sigtermSource?.setEventHandler { NSApp.terminate(nil) }
         sigtermSource?.resume()
         lidSetupOK = lidSetupInstalled()
+        refreshLidRuleStamp()
         updateCheckInActivity()
 
         let menu = NSMenu()
@@ -497,7 +501,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             && (lastUpdateCheck == nil || Date().timeIntervalSince(lastUpdateCheck!) > updateCheckEvery) { checkForUpdates() }
 
         tickCount += 1
-        if (autoContinue || settings.autoResumeLimit || settings.keepAwakeClaudeWorking) && tickCount % 3 == 0 && !scanning {   // ~every 9s
+        if terminalScanOn && tickCount % 3 == 0 && !scanning {   // ~every 9s
             scanning = true
             let flags = ScanFlags(mode: settings.autoContinueMode, resumeLimit: settings.autoResumeLimit,
                                   watchWorking: settings.keepAwakeClaudeWorking,
@@ -1245,12 +1249,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         return "On battery (\(pct)%): stops keeping it awake at \(awakeBatteryFloor(settings.batteryFloor))%"
     }
 
+    /// Low Power Mode is ours and actually on: on the charger, the battery profile we set isn't the one in use.
+    var lowPowerOursAndOn: Bool { fm.fileExists(atPath: lowPowerMarkerPath) && ProcessInfo.processInfo.isLowPowerModeEnabled }
+
     /// What Ephedrine is holding back; later tasks fill in the rest.
     var heldState: (paused: Int, dockerPaused: Bool, muted: Bool, lowPower: Bool, lastGap: TimeInterval?) {
-        // Ours and actually on: on the charger, the battery profile we set isn't the one in use.
-        let lowPower = fm.fileExists(atPath: lowPowerMarkerPath) && ProcessInfo.processInfo.isLowPowerModeEnabled
         // "muted" while the hold has the default output muted, not while a gone device's entry waits.
-        return (pausedAppCount, dockerPaused, muteWatchdogArmed(), lowPower, outage.lastGap)
+        (pausedAppCount, dockerPaused, muteWatchdogArmed(), lowPowerOursAndOn, outage.lastGap)
     }
 
     /// Plain warning lines for the status card (no "⚠"; the card draws the triangle).
@@ -1296,18 +1301,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let now = Date()
         let marker = lidActive && fm.fileExists(atPath: lidMarkerPath)
         let closed = lidClosedNow()
-        let cause = fm.fileExists(atPath: lowPowerMarkerPath)
+        let cause = lowPowerOursAndOn   // the same test as the held line
             ? (try? String(contentsOfFile: lowPowerMarkerPath, encoding: .utf8)).flatMap { LowPowerCause(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines)) }
             : nil
         let cmuxState = cmuxRowState
         let ssid = hotspotName
         return FeatureSnapshot(
             lidSetup: lidSetupOK, lidHolding: marker, lidClosed: closed && externalDisplayActive(),
-            claudeWorking: activeSessionCount() > 0 || (settings.keepAwakeClaudeWorking && claudeWorkingCached), stayAwake: manualKeepAwake || keepAwakeUntil != nil,
+            claudeWorking: activeSessionCount() > 0 || (settings.keepAwakeClaudeWorking && claudeWorkingCached),
+            claudeCanHoldLid: claudeCanHoldLid, foreignNoSleep: lidActive && !marker,   // someone else's disablesleep
             lowPowerNeedsRerun: lowPowerSetupNeeded, lowPowerOn: cause,
             lowPowerOnLidShut: settings.lowPowerOnLidShut, lowPowerFloor: settings.lowPowerFloor,
             muteOnShut: settings.lidMute, keyboardOffOnShut: settings.lidKeyboardOff,
             pauseAppsOnShut: settings.lidPauseApps, dockerRule: settings.lidDockerRule,
+            keyboardLightWorks: KeyboardBacklight.shared.refusal == nil,
             cmux: cmuxState, hotspotSSID: ssid, hotspotPassword: hotspotPassword,
             holding: awake.systemOn || lidShutHold(closed: closed),
             networkUp: outage.downSince == nil,

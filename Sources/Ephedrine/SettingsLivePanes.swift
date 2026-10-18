@@ -72,7 +72,8 @@ struct LidPane: View {
     var body: some View {
         let setupOK = controller.lidSetupOK
         let banner = SettingsBanners.lid(setupOK: setupOK, lowPowerSetupNeeded: controller.lowPowerSetupNeeded,
-                                         whileClaude: settings.lidWhileClaude)
+                                         whileClaude: settings.lidWhileClaude, keepAwakeOn: settings.enabled,
+                                         claudeCanHoldLid: controller.claudeCanHoldLid)
         VStack(alignment: .leading, spacing: 16) {
             SettingsBanner(symbol: SettingsPane.lid.symbol, headline: banner.headline, sentence: banner.sentence,
                            action: banner.action.map { a in

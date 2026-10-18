@@ -10,13 +10,13 @@ public struct SettingsAttention: Equatable {
         self.lid = lid; self.claude = claude; self.about = about
     }
 
-    /// Lid closed: the lid rule needs re-running for Low Power Mode, or there's
-    /// no lid setup while "While Claude is working" (with keep-awake on) would
-    /// use it. Claude Code: the saved cmux password can't be read, or cmux
-    /// turned it down. About: a newer version is out.
-    public static func evaluate(lidSetupOK: Bool, lowPowerSetupNeeded: Bool, keepAwakeOn: Bool, lidWhileClaude: Bool,
+    /// Lid closed: lid setup is there but needs re-running for Low Power Mode
+    /// (setup itself is optional, so never having done it gets no dot: there'd
+    /// be no way to clear it). Claude Code: the saved cmux password can't be
+    /// read, or cmux turned it down. About: a newer version is out.
+    public static func evaluate(lidSetupOK: Bool, lowPowerSetupNeeded: Bool,
                                 cmux: CmuxRowState, updateAvailable: Bool) -> SettingsAttention {
-        SettingsAttention(lid: lowPowerSetupNeeded || (!lidSetupOK && keepAwakeOn && lidWhileClaude),
+        SettingsAttention(lid: lidSetupOK && lowPowerSetupNeeded,
                           claude: cmux == .unreadablePassword || cmux == .badPassword,
                           about: updateAvailable)
     }
@@ -33,8 +33,13 @@ public enum SettingsBanners {
     }
 
     /// What happens once Claude finishes. `waitSeconds` is the wait in use
-    /// (the display-off time when it follows that).
-    public static func sleep(finishMode: FinishMode, waitSeconds: Int, powerMode: PowerMode) -> (headline: String, sentence: String) {
+    /// (the display-off time when it follows that). `enabled` is the master
+    /// switch: off, nothing here sleeps the Mac.
+    public static func sleep(enabled: Bool, finishMode: FinishMode, waitSeconds: Int, powerMode: PowerMode) -> (headline: String, sentence: String) {
+        if !enabled {
+            return ("Off, macOS sleeps as usual",
+                    "“Keep awake while Claude is working” is off under General, so Ephedrine doesn't sleep the Mac after Claude finishes.")
+        }
         let wait = waitText(waitSeconds)
         let power: String
         switch powerMode {
@@ -58,16 +63,26 @@ public enum SettingsBanners {
     /// The Lid closed pane's banner. `action` is what its button does, if any.
     public enum LidAction: Equatable { case setUp, rerunSetup }
 
-    public static func lid(setupOK: Bool, lowPowerSetupNeeded: Bool, whileClaude: Bool)
+    /// `keepAwakeOn` is the master switch; `claudeCanHoldLid` says Claude working
+    /// would keep the Mac awake shut right now (claudeCanHoldLid in Lid.swift).
+    public static func lid(setupOK: Bool, lowPowerSetupNeeded: Bool, whileClaude: Bool, keepAwakeOn: Bool, claudeCanHoldLid: Bool)
         -> (headline: String, sentence: String, action: LidAction?) {
         if !setupOK {
             return ("Lid-closed mode isn't set up",
                     "A MacBook sleeps the moment its lid closes, even while Claude is working. Setup lets Ephedrine keep it awake with the lid shut. It asks for your password once.",
                     .setUp)
         }
-        let works = whileClaude
-            ? "Close the lid while Claude works and it keeps going, then the Mac sleeps a minute after it finishes."
-            : "Lid sessions you start work. “While Claude is working” is off, so closing the lid mid-task lets the Mac sleep."
+        let sleeps = ", so closing the lid mid-task lets the Mac sleep."
+        let works: String
+        if whileClaude && keepAwakeOn && claudeCanHoldLid {
+            works = "Close the lid while Claude works and it keeps going, then the Mac sleeps a minute after it finishes."
+        } else if !whileClaude {
+            works = "Lid sessions you start work. “While Claude is working” is off" + sleeps
+        } else if !keepAwakeOn {
+            works = "Lid sessions you start work. “Keep awake while Claude is working” is off under General" + sleeps
+        } else {
+            works = "The battery or heat limit applies right now" + sleeps
+        }
         if lowPowerSetupNeeded {
             return ("Lid-closed mode needs one more step",
                     works + " Low Power Mode needs the setup re-run. It adds Low Power Mode to what Ephedrine may switch and asks for your password once.",
@@ -94,6 +109,7 @@ public enum SettingsBanners {
         case .unreadablePassword: parts.append("Ephedrine can't read the saved cmux password.")
         case .badPassword: parts.append("cmux turned the saved password down.")
         case .noPassword: parts.append("cmux is open but has no socket password saved here.")
+        case .noPasswordInCmux: parts.append("cmux has no socket password set in its Automation settings.")
         default: break
         }
         return (headline, parts.joined(separator: " "))
@@ -103,7 +119,7 @@ public enum SettingsBanners {
     public static func away(isAway: Bool) -> (headline: String, sentence: String) {
         let tail = "Claude keeps working, then the Mac sleeps a minute after it's done. Move the mouse, type or open the lid to come back."
         return ("I'm leaving pauses your apps and turns the screen off",
-                isAway ? "You're away now. " + tail : "Other apps are paused, so Claude has the Mac to itself. " + tail)
+                isAway ? "You're away now. " + tail : "Other apps get paused, so Claude has the Mac to itself. " + tail)
     }
 
     /// The About pane's banner. `latest` is the newer version, when there is one.
@@ -137,6 +153,8 @@ public enum SettingsBanners {
         case .noPassword: return ("No password", .dim)
         case .unreadablePassword: return ("Needs password", .warn)
         case .badPassword: return ("Wrong password", .warn)
+        case .noPasswordInCmux: return ("No password in cmux", .dim)
+        case .notWatched: return ("Not watched", .dim)
         case .failed: return ("Can't connect", .warn)
         }
     }

@@ -2,11 +2,9 @@ import Testing
 import Foundation
 @testable import EphedrineCore
 
-private func attention(lidSetupOK: Bool = true, lowPowerSetupNeeded: Bool = false, keepAwakeOn: Bool = true,
-                       lidWhileClaude: Bool = true, cmux: CmuxRowState = .connected(1),
+private func attention(lidSetupOK: Bool = true, lowPowerSetupNeeded: Bool = false, cmux: CmuxRowState = .connected(1),
                        updateAvailable: Bool = false) -> SettingsAttention {
-    SettingsAttention.evaluate(lidSetupOK: lidSetupOK, lowPowerSetupNeeded: lowPowerSetupNeeded, keepAwakeOn: keepAwakeOn,
-                               lidWhileClaude: lidWhileClaude, cmux: cmux, updateAvailable: updateAvailable)
+    SettingsAttention.evaluate(lidSetupOK: lidSetupOK, lowPowerSetupNeeded: lowPowerSetupNeeded, cmux: cmux, updateAvailable: updateAvailable)
 }
 
 @Test func attentionNoneWhenAllIsWell() {
@@ -15,25 +13,26 @@ private func attention(lidSetupOK: Bool = true, lowPowerSetupNeeded: Bool = fals
 
 @Test func attentionLid() {
     #expect(attention(lowPowerSetupNeeded: true) == SettingsAttention(lid: true))
-    #expect(attention(lidSetupOK: false) == SettingsAttention(lid: true))
-    // No setup, but nothing would use it: "While Claude is working" off, or keep-awake off.
-    #expect(attention(lidSetupOK: false, lidWhileClaude: false) == SettingsAttention())
-    #expect(attention(lidSetupOK: false, keepAwakeOn: false) == SettingsAttention())
-    // The re-run is needed whatever those switches say.
-    #expect(attention(lowPowerSetupNeeded: true, keepAwakeOn: false, lidWhileClaude: false) == SettingsAttention(lid: true))
+}
+
+@Test func attentionLidNotWithoutSetup() {
+    // Setup is optional: never having done it gets no dot, since declining it couldn't clear one.
+    #expect(attention(lidSetupOK: false) == SettingsAttention())
+    #expect(attention(lidSetupOK: false, lowPowerSetupNeeded: true) == SettingsAttention())
 }
 
 @Test func attentionClaude() {
     #expect(attention(cmux: .unreadablePassword) == SettingsAttention(claude: true))
     #expect(attention(cmux: .badPassword) == SettingsAttention(claude: true))
-    for quiet: CmuxRowState in [.notInstalled, .notRunning, .noPassword, .checking, .failed, .connected(0), .connected(3)] {
+    for quiet: CmuxRowState in [.notInstalled, .notRunning, .noPassword, .checking, .noPasswordInCmux, .notWatched,
+                                .failed, .connected(0), .connected(3)] {
         #expect(attention(cmux: quiet) == SettingsAttention(), "\(quiet)")
     }
 }
 
 @Test func attentionAbout() {
     #expect(attention(updateAvailable: true) == SettingsAttention(about: true))
-    #expect(attention(lidSetupOK: false, cmux: .badPassword, updateAvailable: true)
+    #expect(attention(lowPowerSetupNeeded: true, cmux: .badPassword, updateAvailable: true)
             == SettingsAttention(lid: true, claude: true, about: true))
 }
 
@@ -47,19 +46,28 @@ private func attention(lidSetupOK: Bool = true, lowPowerSetupNeeded: Bool = fals
 }
 
 @Test func sleepBannerModes() {
-    let idle = SettingsBanners.sleep(finishMode: .sleepIfIdle, waitSeconds: 300, powerMode: .always)
+    let idle = SettingsBanners.sleep(enabled: true, finishMode: .sleepIfIdle, waitSeconds: 300, powerMode: .always)
     #expect(idle.headline == "After Claude finishes, the Mac sleeps once you're away")
     #expect(idle.sentence == "It waits until the keyboard and mouse have been idle for 5 minutes.")
-    let always = SettingsBanners.sleep(finishMode: .alwaysSleep, waitSeconds: 300, powerMode: .always)
+    let always = SettingsBanners.sleep(enabled: true, finishMode: .alwaysSleep, waitSeconds: 300, powerMode: .always)
     #expect(always.headline == "After Claude finishes, the Mac sleeps even if you're using it")
     #expect(always.sentence == "It sleeps 5 minutes after Claude is done, even while you're typing.")
-    let normal = SettingsBanners.sleep(finishMode: .stayNormal, waitSeconds: 300, powerMode: .always)
+    let normal = SettingsBanners.sleep(enabled: true, finishMode: .stayNormal, waitSeconds: 300, powerMode: .always)
     #expect(normal.headline == "After Claude finishes, macOS handles sleep")
     #expect(normal.sentence == "Ephedrine only keeps the Mac awake while Claude works.")
 }
 
+@Test func sleepBannerMasterOff() {
+    // Keep-awake off: nothing sleeps the Mac after Claude, whatever the mode.
+    for mode in FinishMode.allCases {
+        let off = SettingsBanners.sleep(enabled: false, finishMode: mode, waitSeconds: 300, powerMode: .batteryOnly)
+        #expect(off.headline == "Off, macOS sleeps as usual", "\(mode)")
+        #expect(off.sentence == "“Keep awake while Claude is working” is off under General, so Ephedrine doesn't sleep the Mac after Claude finishes.", "\(mode)")
+    }
+}
+
 @Test func sleepBannerWait() {
-    func wait(_ s: Int) -> String { SettingsBanners.sleep(finishMode: .alwaysSleep, waitSeconds: s, powerMode: .always).sentence }
+    func wait(_ s: Int) -> String { SettingsBanners.sleep(enabled: true, finishMode: .alwaysSleep, waitSeconds: s, powerMode: .always).sentence }
     #expect(wait(15) == "It sleeps 15 seconds after Claude is done, even while you're typing.")
     #expect(wait(1) == "It sleeps 1 second after Claude is done, even while you're typing.")
     #expect(wait(60) == "It sleeps 1 minute after Claude is done, even while you're typing.")
@@ -68,36 +76,59 @@ private func attention(lidSetupOK: Bool = true, lowPowerSetupNeeded: Bool = fals
 }
 
 @Test func sleepBannerPowerSource() {
-    let battery = SettingsBanners.sleep(finishMode: .sleepIfIdle, waitSeconds: 30, powerMode: .batteryOnly)
+    let battery = SettingsBanners.sleep(enabled: true, finishMode: .sleepIfIdle, waitSeconds: 30, powerMode: .batteryOnly)
     #expect(battery.sentence == "It waits until the keyboard and mouse have been idle for 30 seconds. Plugged in, your normal macOS settings apply.")
-    let ac = SettingsBanners.sleep(finishMode: .alwaysSleep, waitSeconds: 30, powerMode: .acOnly)
+    let ac = SettingsBanners.sleep(enabled: true, finishMode: .alwaysSleep, waitSeconds: 30, powerMode: .acOnly)
     #expect(ac.sentence == "It sleeps 30 seconds after Claude is done, even while you're typing. On battery, your normal macOS settings apply.")
     // Nothing auto-sleeps, so the power source doesn't matter.
-    let normal = SettingsBanners.sleep(finishMode: .stayNormal, waitSeconds: 30, powerMode: .batteryOnly)
+    let normal = SettingsBanners.sleep(enabled: true, finishMode: .stayNormal, waitSeconds: 30, powerMode: .batteryOnly)
     #expect(normal.sentence == "Ephedrine only keeps the Mac awake while Claude works.")
 }
 
 @Test func lidBanner() {
-    let notSetUp = SettingsBanners.lid(setupOK: false, lowPowerSetupNeeded: false, whileClaude: true)
+    let notSetUp = SettingsBanners.lid(setupOK: false, lowPowerSetupNeeded: false, whileClaude: true, keepAwakeOn: true, claudeCanHoldLid: true)
     #expect(notSetUp.headline == "Lid-closed mode isn't set up")
     #expect(notSetUp.action == .setUp)
     // The stamp rule only counts once setup is installed.
-    #expect(SettingsBanners.lid(setupOK: false, lowPowerSetupNeeded: true, whileClaude: true).action == .setUp)
+    #expect(SettingsBanners.lid(setupOK: false, lowPowerSetupNeeded: true, whileClaude: true, keepAwakeOn: true, claudeCanHoldLid: true).action == .setUp)
 
-    let ready = SettingsBanners.lid(setupOK: true, lowPowerSetupNeeded: false, whileClaude: true)
+    let ready = SettingsBanners.lid(setupOK: true, lowPowerSetupNeeded: false, whileClaude: true, keepAwakeOn: true, claudeCanHoldLid: true)
     #expect(ready.headline == "Lid-closed mode is ready")
     #expect(ready.action == nil)
     #expect(ready.sentence.contains("keeps going"))
     #expect(!ready.sentence.contains("Low Power"))
 
-    let step = SettingsBanners.lid(setupOK: true, lowPowerSetupNeeded: true, whileClaude: true)
+    let step = SettingsBanners.lid(setupOK: true, lowPowerSetupNeeded: true, whileClaude: true, keepAwakeOn: true, claudeCanHoldLid: true)
     #expect(step.headline == "Lid-closed mode needs one more step")
     #expect(step.action == .rerunSetup)
     #expect(step.sentence.contains("Low Power Mode needs the setup re-run"))
 
-    let off = SettingsBanners.lid(setupOK: true, lowPowerSetupNeeded: false, whileClaude: false)
+    let off = SettingsBanners.lid(setupOK: true, lowPowerSetupNeeded: false, whileClaude: false, keepAwakeOn: true, claudeCanHoldLid: false)
     #expect(off.sentence.contains("“While Claude is working” is off"))
     #expect(!off.sentence.contains("keeps going"))
+}
+
+@Test func lidBannerWhenClaudeCantHoldTheLid() {
+    func sentence(whileClaude: Bool = true, keepAwakeOn: Bool = true, can: Bool) -> String {
+        SettingsBanners.lid(setupOK: true, lowPowerSetupNeeded: false, whileClaude: whileClaude,
+                            keepAwakeOn: keepAwakeOn, claudeCanHoldLid: can).sentence
+    }
+    #expect(sentence(can: true) == "Close the lid while Claude works and it keeps going, then the Mac sleeps a minute after it finishes.")
+    // Keep-awake off (the master switch wins even if claudeCanHoldLid came in true).
+    for can in [false, true] {
+        #expect(sentence(keepAwakeOn: false, can: can)
+                == "Lid sessions you start work. “Keep awake while Claude is working” is off under General, so closing the lid mid-task lets the Mac sleep.")
+    }
+    // "While Claude is working" off.
+    #expect(sentence(whileClaude: false, can: false)
+            == "Lid sessions you start work. “While Claude is working” is off, so closing the lid mid-task lets the Mac sleep.")
+    // A battery or heat stop, with both switches on.
+    #expect(sentence(can: false) == "The battery or heat limit applies right now, so closing the lid mid-task lets the Mac sleep.")
+    // The re-run step keeps the reason.
+    let step = SettingsBanners.lid(setupOK: true, lowPowerSetupNeeded: true, whileClaude: true, keepAwakeOn: false, claudeCanHoldLid: false)
+    #expect(step.action == .rerunSetup)
+    #expect(step.sentence.hasPrefix("Lid sessions you start work. “Keep awake while Claude is working” is off"))
+    #expect(!step.sentence.contains("keeps going"))
 }
 
 @Test func claudeBanner() {
@@ -121,8 +152,10 @@ private func attention(lidSetupOK: Bool = true, lowPowerSetupNeeded: Bool = fals
             .contains("can't read the saved cmux password"))
     #expect(SettingsBanners.claude(autoContinue: .persistent, autoResumeLimit: true, cmux: .badPassword).sentence
             .contains("turned the saved password down"))
+    #expect(SettingsBanners.claude(autoContinue: .persistent, autoResumeLimit: true, cmux: .noPasswordInCmux).sentence
+            .hasSuffix("cmux has no socket password set in its Automation settings."))
     // cmux off or checking adds nothing and doesn't claim cmux.
-    for quiet: CmuxRowState in [.notInstalled, .notRunning, .checking, .failed] {
+    for quiet: CmuxRowState in [.notInstalled, .notRunning, .checking, .notWatched, .failed] {
         let b = SettingsBanners.claude(autoContinue: .fast, autoResumeLimit: true, cmux: quiet)
         #expect(b.headline == "Retrying API errors in Terminal", "\(quiet)")
         #expect(!b.sentence.contains("cmux"), "\(quiet)")
@@ -135,7 +168,7 @@ private func attention(lidSetupOK: Bool = true, lowPowerSetupNeeded: Bool = fals
     #expect(here.headline == "I'm leaving pauses your apps and turns the screen off")
     #expect(gone.headline == here.headline)
     #expect(gone.sentence.hasPrefix("You're away now."))
-    #expect(here.sentence.hasPrefix("Other apps are paused"))
+    #expect(here.sentence.hasPrefix("Other apps get paused, so Claude has the Mac to itself. "))
     #expect(here.sentence.hasSuffix("open the lid to come back."))
 }
 
@@ -166,4 +199,6 @@ private func attention(lidSetupOK: Bool = true, lowPowerSetupNeeded: Bool = fals
     #expect(SettingsBanners.cmuxBadge(.unreadablePassword) == ("Needs password", .warn))
     #expect(SettingsBanners.cmuxBadge(.badPassword) == ("Wrong password", .warn))
     #expect(SettingsBanners.cmuxBadge(.failed) == ("Can't connect", .warn))
+    #expect(SettingsBanners.cmuxBadge(.noPasswordInCmux) == ("No password in cmux", .dim))
+    #expect(SettingsBanners.cmuxBadge(.notWatched) == ("Not watched", .dim))
 }
