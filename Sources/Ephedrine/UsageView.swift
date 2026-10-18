@@ -19,13 +19,14 @@ final class UsageView: NSView {
     private var message: String? = "Loading…"
     private var hovered = false
 
-    private static let width: CGFloat = 320
-    private static let inset: CGFloat = 14
-    private static let headerH: CGFloat = 28
-    private static let rowH: CGFloat = 34
+    private static let topPad: CGFloat = 4
+    private static let headerH: CGFloat = 22
+    private static let rowLabelH: CGFloat = 15
+    private static let rowGap: CGFloat = 9
+    private static let rowH: CGFloat = 25
 
     init() {
-        super.init(frame: NSRect(x: 0, y: 0, width: Self.width, height: Self.height(rows: 0)))
+        super.init(frame: NSRect(x: 0, y: 0, width: MenuMetrics.width, height: Self.height(rows: 0)))
         setAccessibilityRole(.button)
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -33,13 +34,13 @@ final class UsageView: NSView {
     override var isFlipped: Bool { true }
 
     private static func height(rows: Int) -> CGFloat {
-        headerH + (rows == 0 ? 22 : CGFloat(rows) * rowH) + 6
+        topPad + headerH + (rows == 0 ? 17 : 5 + CGFloat(rows) * rowH + CGFloat(rows - 1) * rowGap) + 6
     }
 
     func update(rows: [Row], status: String, message: String?) {
         self.rows = rows; self.status = status; self.message = message
         let h = Self.height(rows: message == nil ? rows.count : 0)
-        if frame.height != h { setFrameSize(NSSize(width: Self.width, height: h)) }
+        if frame.height != h { setFrameSize(NSSize(width: MenuMetrics.width, height: h)) }
         setAccessibilityLabel(message ?? rows.map { "\($0.label) \($0.detail)" }.joined(separator: ", "))
         needsDisplay = true
     }
@@ -53,8 +54,8 @@ final class UsageView: NSView {
 
     private func barColor(_ level: UsageLevel) -> NSColor {
         switch level {
-        case .normal:   return .controlAccentColor
-        case .warning:  return .systemOrange
+        case .normal:   return claudeOrange
+        case .warning:  return menuWarningColor
         case .critical: return .systemRed
         }
     }
@@ -65,32 +66,42 @@ final class UsageView: NSView {
             NSColor.selectedContentBackgroundColor.withAlphaComponent(0.18).setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 5, dy: 1), xRadius: 5, yRadius: 5).fill()
         }
-        let x = Self.inset, w = bounds.width - 2 * Self.inset
+        let x = MenuMetrics.inset, w = bounds.width - 2 * MenuMetrics.inset
 
-        // header: "Claude usage" ………… "click to refresh"
-        text("Claude usage", size: NSFont.systemFontSize, weight: .semibold, color: .labelColor)
-            .draw(at: NSPoint(x: x, y: 5))
-        let st = text(status, size: NSFont.smallSystemFontSize, color: .tertiaryLabelColor)
-        st.draw(at: NSPoint(x: x + w - st.size().width, y: 7))
+        // header: "Claude usage" ………… "↻ click to refresh"
+        let hy = Self.topPad + Self.headerH / 2
+        let title = text("Claude usage", size: 12, weight: .semibold, color: .labelColor)
+        title.draw(at: NSPoint(x: x, y: hy - title.size().height / 2))
+        let st = text(status, size: 11, color: .tertiaryLabelColor)
+        var sx = x + w - st.size().width
+        st.draw(at: NSPoint(x: sx, y: hy - st.size().height / 2))
+        let cfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .regular)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [.tertiaryLabelColor]))
+        if !status.isEmpty, let arrow = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)?.withSymbolConfiguration(cfg) {
+            sx -= arrow.size.width + 4
+            arrow.draw(in: NSRect(x: sx, y: hy - arrow.size.height / 2, width: arrow.size.width, height: arrow.size.height),
+                       from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        }
 
+        let top0 = Self.topPad + Self.headerH
         if let m = message {
-            text(m, size: NSFont.systemFontSize, color: .secondaryLabelColor).draw(at: NSPoint(x: x, y: Self.headerH + 2))
+            text(m, size: 12, color: .secondaryLabelColor).draw(at: NSPoint(x: x, y: top0 + 1))
             return
         }
         for (i, r) in rows.enumerated() {
-            let top = Self.headerH + CGFloat(i) * Self.rowH
-            text(r.label, size: NSFont.systemFontSize, color: .labelColor).draw(at: NSPoint(x: x, y: top))
-            let d = text(r.detail, size: NSFont.smallSystemFontSize, color: .secondaryLabelColor)
-            d.draw(at: NSPoint(x: x + w - d.size().width, y: top + 2))
+            let top = top0 + 5 + CGFloat(i) * (Self.rowH + Self.rowGap)
+            text(r.label, size: 12, color: .labelColor).draw(at: NSPoint(x: x, y: top))
+            let d = text(r.detail, size: 11, color: .secondaryLabelColor)
+            d.draw(at: NSPoint(x: x + w - d.size().width, y: top + 1))
 
-            let track = NSRect(x: x, y: top + 19, width: w, height: 6)
+            let track = NSRect(x: x, y: top + Self.rowLabelH + 5, width: w, height: 5)
             NSColor.quaternaryLabelColor.setFill()
-            NSBezierPath(roundedRect: track, xRadius: 3, yRadius: 3).fill()
+            NSBezierPath(roundedRect: track, xRadius: 2.5, yRadius: 2.5).fill()
             let frac = CGFloat(min(max(r.percent, 0), 100) / 100)
             if frac > 0 {
                 var fill = track; fill.size.width = max(track.height, track.width * frac)
                 barColor(r.level).setFill()
-                NSBezierPath(roundedRect: fill, xRadius: 3, yRadius: 3).fill()
+                NSBezierPath(roundedRect: fill, xRadius: 2.5, yRadius: 2.5).fill()
             }
         }
     }

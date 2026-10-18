@@ -145,6 +145,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var usageView: UsageView?
     let settingsWindow = SettingsWindowController()
     let setupWindow = SetupWindowController()
+    var iconActive = false                          // last `active` refreshIcon saw (the status card picks its glyph from it)
     var awakeIcons: [MenuBarIconStyle: NSImage] = [:]   // made once per style; refreshIcon runs every tick
 
     let graceChoices: [(secs: Int, long: String)] = [
@@ -889,21 +890,30 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
     // MARK: menu bar icon
 
-    func refreshIcon(active: Bool, title: String) {
-        guard let btn = statusItem.button else { return }
+    /// Which glyph stands for the current state (menu bar and status card share it):
+    /// `symbol` is nil for the awake mug.
+    func iconChoice(active: Bool) -> (symbol: String?, lidSession: Bool) {
         // Laptop for a lid session the user started, or `pmset disablesleep` set
         // by hand (both easy to forget); Claude-driven lid mode ends by itself,
         // so it shows the normal awake mug.
         let lidSession = lidActive && (lidState.session != nil || !fm.fileExists(atPath: lidMarkerPath))
+        if !awayMode && !lidSession && (active || lidActive) { return (nil, lidSession) }
+        let name = awayMode ? "figure.walk"
+            : lidSession ? "laptopcomputer"
+            : (!settings.enabled ? "moon" : "moon.zzz")
+        return (name, lidSession)
+    }
+
+    func refreshIcon(active: Bool, title: String) {
+        guard let btn = statusItem.button else { return }
+        iconActive = active
         let style = settings.menuBarIconStyle
-        if !awayMode && !lidSession && (active || lidActive) {
+        let choice = iconChoice(active: active)
+        if let name = choice.symbol {
+            btn.image = menuBarSymbolIcon(name, tint: menuBarStateTint(style: style, away: awayMode, lidSession: choice.lidSession))
+        } else {
             if awakeIcons[style] == nil { awakeIcons[style] = menuBarAwakeIcon(style: style) }
             btn.image = awakeIcons[style]
-        } else {
-            let name = awayMode ? "figure.walk"
-                : lidSession ? "laptopcomputer"
-                : (!settings.enabled ? "moon" : "moon.zzz")
-            btn.image = menuBarSymbolIcon(name, tint: menuBarStateTint(style: style, away: awayMode, lidSession: lidSession))
         }
         btn.title = title.isEmpty ? "" : " " + title
         btn.imagePosition = title.isEmpty ? .imageOnly : .imageLeading
@@ -956,34 +966,88 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         return "On battery (\(pct)%): stops keeping it awake at \(awakeBatteryFloor(settings.batteryFloor))%"
     }
 
+    /// What Ephedrine is holding back; later tasks fill in the rest.
+    var heldState: (paused: Int, dockerPaused: Bool, muted: Bool, lowPower: Bool, lastGap: TimeInterval?) {
+        (suspendedPids.count, false, false, false, nil)
+    }
+
+    /// Plain warning lines for the status card (no "⚠"; the card draws the triangle).
+    func menuWarnings() -> [String] {
+        var out: [String] = []
+        if lidActive && !fm.fileExists(atPath: lidMarkerPath) { out.append("Sleep is disabled by pmset, not by Ephedrine") }
+        return out
+    }
+
+    /// Actionable items right under the status card (filled in by later tasks).
+    func addAlertItems(to menu: NSMenu) {}
+
+    /// Everything the status card shows. Watts and Wi-Fi are read here, when the menu opens, never on a timer.
+    func menuStatus() -> MenuStatus {
+        let lid: LidChip = lidIsClosed() ? .shut : (lidActive && fm.fileExists(atPath: lidMarkerPath) ? .canClose : .none)
+        let chips = StatusLines.chips(lid: lid, watts: instantWatts(), batteryPercent: batteryPercent(),
+                                      charging: isCharging(), wifi: wifiStatusName())
+        var notes: [String] = []
+        if batteryText() != nil { notes.append(StatusLines.batteryNote(floor: awakeBatteryFloor(settings.batteryFloor))) }
+        let h = heldState
+        if let held = StatusLines.held(paused: h.paused, dockerPaused: h.dockerPaused, muted: h.muted,
+                                       lowPower: h.lowPower, lastGap: h.lastGap) { notes.append(held) }
+        return MenuStatus(headline: statusText(), detail: nextText(), chips: chips, notes: notes, warnings: menuWarnings())
+    }
+
+    /// The card's glyph and tile color: the menu bar's own choice of icon.
+    private func statusCardGlyph() -> (NSImage, NSColor) {
+        if batteryStop.stopped {
+            return (cardSymbol("battery.25percent", menuWarningColor), menuWarningColor)
+        }
+        let tint: NSColor = (iconActive || awayMode || lidActive) ? claudeOrange : .secondaryLabelColor
+        guard let name = iconChoice(active: iconActive).symbol else {
+            let size = NSSize(width: 20, height: 20)
+            return (NSImage(size: size, flipped: false) { r in drawAwakeMug(in: r, mug: claudeOrange, spark: nil); return true }, tint)
+        }
+        return (cardSymbol(name, tint), tint)
+    }
+
+    private func cardSymbol(_ name: String, _ color: NSColor) -> NSImage {
+        let cfg = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [color]))
+        return NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(cfg) ?? NSImage()
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
         if settings.setupDone && (lastUsageFetch == nil || Date().timeIntervalSince(lastUsageFetch!) > 60) { fetchUsage() }
         refreshDisplaySleepIfStale()
         menu.removeAllItems()
         addStatusAndUsage(to: menu)
-        menu.addItem(awayMode ? item("I'm back, restore my apps", #selector(toggleAway))
-                              : item("I'm leaving", #selector(toggleAway), subtitle: "Pause apps, screen off, sleep when Claude's done"))
+        menu.addItem(.separator())
+        menu.addItem(awayMode ? item("I'm back, restore my apps", #selector(toggleAway), symbol: "arrow.uturn.backward")
+                              : item("I'm leaving", #selector(toggleAway), tip: "Pause apps, screen off, sleep when Claude's done", symbol: "figure.walk"))
         menu.addItem(stayAwakeMenuItem())
         menu.addItem(.separator())
-        menu.addItem(item("Keep awake while Claude works", #selector(toggleEnabled), on: settings.enabled,
-                          subtitle: settings.enabled ? nil : "Off, so macOS sleeps as usual"))
+        let sw = SwitchRowView(title: "Keep awake while Claude works", isOn: settings.enabled,
+                               toolTip: settings.enabled ? nil : "Off, so macOS sleeps as usual") { [weak self] _ in self?.toggleEnabled() }
+        let swItem = NSMenuItem()
+        swItem.view = sw
+        menu.addItem(swItem)
         let s = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         s.target = self
+        s.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
         menu.addItem(s)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Ephedrine", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
+        quit.image = NSImage(systemSymbolName: "power", accessibilityDescription: nil)
         menu.addItem(quit)
     }
 
     /// Menu item with an action on self.
     func item(_ title: String, _ action: Selector?, on: Bool = false,
-                      subtitle: String? = nil, tip: String? = nil) -> NSMenuItem {
+                      subtitle: String? = nil, tip: String? = nil, symbol: String? = nil) -> NSMenuItem {
         let it = NSMenuItem(title: title, action: action, keyEquivalent: "")
         it.target = self
         it.state = on ? .on : .off
         it.toolTip = tip
         it.subtitle = subtitle
+        if let symbol = symbol { it.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) }
         return it
     }
 
@@ -1008,6 +1072,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         }
         let holder = NSMenuItem(title: "Stay awake", action: nil, keyEquivalent: "")
         holder.submenu = sub
+        holder.image = NSImage(systemSymbolName: "cup.and.saucer", accessibilityDescription: nil)
         if manualKeepAwake { holder.subtitle = "Until you turn it off" }
         else if let u = keepAwakeUntil { holder.subtitle = "\(fmtDuration(Int(u.timeIntervalSinceNow))) left" }
         return holder
@@ -1021,11 +1086,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             menu.addItem(u)
             menu.addItem(.separator())
         }
-        for line in [statusText(), nextText(), lidStatusText(), batteryText()].compactMap({ $0 }) {
-            let l = NSMenuItem(title: line, action: nil, keyEquivalent: "")
-            l.isEnabled = false
-            menu.addItem(l)
-        }
+        let (glyph, tint) = statusCardGlyph()
+        let cardItem = NSMenuItem()
+        cardItem.view = StatusCardView(status: menuStatus(), glyph: glyph, tint: tint)
+        menu.addItem(cardItem)
+        addAlertItems(to: menu)
         menu.addItem(.separator())
 
         // Claude usage: a custom view with a bar per limit; clicking refreshes it in place
@@ -1036,8 +1101,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let uItem = NSMenuItem()
         uItem.view = uv
         menu.addItem(uItem)
-
-        menu.addItem(.separator())
     }
 
     // MARK: actions

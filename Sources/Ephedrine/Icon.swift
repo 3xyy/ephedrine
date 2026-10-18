@@ -65,7 +65,7 @@ func menuBarStateTint(style: MenuBarIconStyle, away: Bool, lidSession: Bool) -> 
 /// Mug filled with `mug`, spark knocked out, then (optionally) the spark
 /// filled with `spark` and a thin gap around it. Done inside a transparency
 /// layer so the knock-out only ever erases the mug, never what's behind it.
-private func drawAwakeMug(in rect: NSRect, mug: NSColor, spark: NSColor?) {
+func drawAwakeMug(in rect: NSRect, mug: NSColor, spark: NSColor?) {
     let cfg = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
     guard let cup = NSImage(systemSymbolName: "mug.fill", accessibilityDescription: nil)?.withSymbolConfiguration(cfg),
           let ctx = NSGraphicsContext.current else { return }
