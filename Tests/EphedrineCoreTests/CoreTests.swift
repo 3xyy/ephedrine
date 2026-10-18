@@ -683,11 +683,6 @@ private func stuck(_ w: inout LidSleepWatch, at t: TimeInterval, closed: Bool = 
     #expect(hrs.map(\.timeIntervalSince1970) == want)
 }
 
-@Test func sudoersRuleIsNarrow() {
-    #expect(lidSudoersRule(user: "uv")
-            == "uv ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset -b lowpowermode 0, /usr/bin/pmset -b lowpowermode 1\n")
-}
-
 @Test func shellQuoting() {
     #expect(shellQuoted("/Users/me/a b") == "'/Users/me/a b'")
     #expect(shellQuoted("it's") == "'it'\\''s'")

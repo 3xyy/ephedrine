@@ -518,20 +518,39 @@ extension AppController {
 
     /// Called from evaluate() every tick, once keep-awake is decided.
     func updateLowPower(holding: Bool, percent: Int?) {
-        let settled = batterySettle.step(onBattery: onInternalBattery(), now: Date())
+        let now = Date()
+        let settled = batterySettle.step(onBattery: onInternalBattery(), now: now)
         if !lidSetupOK { lowPowerRuleOK = nil }   // asked again once setup is back
-        guard !lidApplying else { return }        // a lid flip or a setup removal is running
-        checkLowPowerRule(settled: settled)
-        guard !lowPowerApplying, !lowPowerChecking, Date() >= lowPowerRetryAfter else { return }
-        let cause = lowPowerCause(holding: holding, lidHold: lidShutHold(closed: lidIsClosed()),
+        let ours = fm.fileExists(atPath: lowPowerMarkerPath)
+        if !ours { lowPowerOffFailures = 0; lowPowerOnAt = nil }
+        let modeOn = ProcessInfo.processInfo.isLowPowerModeEnabled
+        // Switched off by hand while ours: it's the owner's now. Drop the marker
+        // without writing, so no later "off" can undo an "on" they make.
+        let onSince = lowPowerOnAt ?? ((try? fm.attributesOfItem(atPath: lowPowerMarkerPath))?[.modificationDate] as? Date) ?? now
+        if lowPowerOwnership.step(ours: ours, settled: settled, inFlight: lowPowerApplying || lowPowerChecking || lidApplying,
+                                  sinceOurSwitchOn: now.timeIntervalSince(onSince), modeOn: modeOn) {
+            try? fm.removeItem(atPath: lowPowerMarkerPath)
+            lowPowerOnAt = nil
+            updateWatchdog()
+            logLine("Low Power Mode: turned off by hand, no longer Ephedrine's")
+            return
+        }
+        let found = lowPowerCause(holding: holding, lidHold: lidShutHold(closed: lidIsClosed()),
                                   onLidShut: settings.lowPowerOnLidShut, onBattery: !onACPower(), percent: percent,
                                   floor: settings.lowPowerFloor, thermal: ProcessInfo.processInfo.thermalState)
-        switch lowPowerStep(cause: cause, modeOn: ProcessInfo.processInfo.isLowPowerModeEnabled,
-                            ours: fm.fileExists(atPath: lowPowerMarkerPath)) {
+        // Held 5 min while ours, and while the owner has taken over (so a heat
+        // cause that flickers doesn't end the takeover early).
+        let cause = lowPowerHold.step(cause: found, ours: ours || lowPowerOwnership.ownerTookOver, now: now)
+        lowPowerOwnership.noteCause(cause)
+        guard !lidApplying else { return }        // a lid flip or a setup removal is running
+        checkLowPowerRule(settled: settled)
+        guard !lowPowerApplying, !lowPowerChecking, now >= lowPowerRetryAfter else { return }
+        switch lowPowerStep(cause: cause, modeOn: modeOn, ours: ours) {
         case .turnOn(let c)?:
             // Only where isLowPowerModeEnabled is the battery profile that `-b`
-            // writes, and once the rule is known to allow it.
-            guard settled, lowPowerRuleOK == true else { return }
+            // writes, once the rule is known to allow it, and not against an
+            // owner who switched ours off during this cause.
+            guard settled, lowPowerRuleOK == true, !lowPowerOwnership.ownerTookOver else { return }
             flipLowPower(true, cause: c)
         case .turnOff?:
             flipLowPower(false, cause: nil)   // also after a crash: the marker is still there at launch
@@ -541,10 +560,12 @@ extension AppController {
     }
 
     /// Asks whether the rule allows Low Power Mode: at launch, after setup, and
-    /// once a minute while it doesn't. Only on battery (see lowPowerAllowed).
+    /// while it doesn't after 1, 5, then every 15 minutes (sudo logs each
+    /// refusal). Only on battery (see lowPowerAllowed).
     private func checkLowPowerRule(settled: Bool) {
         guard lidSetupOK, settled, !lowPowerChecking, !lowPowerApplying else { return }
-        guard lowPowerRuleOK == nil || (lowPowerRuleOK == false && Date().timeIntervalSince(lowPowerCheckedAt) >= 60) else { return }
+        guard lowPowerRuleOK == nil || (lowPowerRuleOK == false
+            && Date().timeIntervalSince(lowPowerCheckedAt) >= lowPowerRecheckDelay(failures: lowPowerCheckFailures)) else { return }
         lowPowerChecking = true
         lowPowerQueue.async { [weak self] in
             let ok = lowPowerAllowed()
@@ -559,6 +580,7 @@ extension AppController {
                                : "Low Power Mode: lid setup predates it, re-run lid setup to allow it")
                 }
                 self.lowPowerRuleOK = ok
+                self.lowPowerCheckFailures = ok ? 0 : self.lowPowerCheckFailures + 1
             }
         }
     }
@@ -590,9 +612,11 @@ extension AppController {
                 case .done:
                     logLine(on ? "Low Power Mode ON (\(cause?.rawValue ?? "?"))"
                                : "Low Power Mode OFF" + (was.map { " (was on for \($0.rawValue))" } ?? ""))
+                    if on { self.lowPowerOnAt = Date() } else { self.lowPowerOnAt = nil; self.lowPowerOffFailures = 0 }
                 case .skipped:
                     if on { logLine("Low Power Mode: already on or plugged in, left it alone") }
                 case .failed:
+                    if !on { self.lowPowerOffFailures += 1 }   // two in a row: menuWarnings says it's stuck
                     logLine("Low Power Mode: `sudo pmset` failed, retrying in 1 min")
                     self.lowPowerRetryAfter = Date().addingTimeInterval(60)
                     self.lidSetupOK = lidSetupInstalled()
@@ -611,8 +635,8 @@ extension AppController {
         let result = lowPowerQueue.sync { applyLowPower(false) }
         updateWatchdog()
         switch result {
-        case .done:    logLine("Low Power Mode OFF (\(why))")
-        case .failed:  logLine("Low Power Mode: couldn't switch it off (\(why)), the watchdog retries")
+        case .done:    logLine("Low Power Mode OFF (\(why))"); lowPowerOnAt = nil; lowPowerOffFailures = 0
+        case .failed:  logLine("Low Power Mode: couldn't switch it off (\(why)), the watchdog retries"); lowPowerOffFailures += 1
         case .skipped: break
         }
     }
@@ -645,7 +669,8 @@ extension AppController {
                 }
                 logLine("lid-closed setup installed (\(lidSudoersPath))")
                 self.lidRetryAfter = .distantPast
-                self.lowPowerRuleOK = nil   // ask the new rule about Low Power Mode
+                self.lowPowerRuleOK = nil   // ask the new rule about Low Power Mode, now
+                self.lowPowerCheckFailures = 0
                 let login = SMAppService.mainApp.status == .enabled
                 self.lidNotify("Lid-closed mode is ready",
                     "Close the lid while Claude works and it keeps going."
@@ -672,7 +697,7 @@ extension AppController {
                 guard let self = self else { return }
                 self.lidApplying = false
                 if lowPower == .done { logLine("Low Power Mode OFF (removing lid setup)") }
-                if lowPower == .failed { logLine("Low Power Mode: couldn't switch it off before removing lid setup") }
+                if lowPower == .failed { logLine("Low Power Mode: couldn't switch it off before removing lid setup"); self.lowPowerOffFailures += 1 }
                 self.updateWatchdog()
                 if !sleepIsDisabled() { try? fm.removeItem(atPath: lidMarkerPath); self.updateWatchdog() }
                 self.lidSetupOK = lidSetupInstalled()

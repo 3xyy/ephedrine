@@ -81,3 +81,54 @@ public struct BatterySettle {
         return now.timeIntervalSince(s) >= Self.delay
     }
 }
+
+/// Low Power Mode cools the Mac and so removes its own heat cause; a Mac near
+/// serious would switch it on, off, on. While it's ours, a cause that held is
+/// still reported until `linger` after it last held. Causes are remembered even
+/// before it's ours, so the one that switched it on counts from that tick.
+public struct LowPowerHold {
+    public static let linger: TimeInterval = 300
+    private var last: LowPowerCause?
+    private var lastAt = Date.distantPast
+    public init() {}
+
+    public mutating func step(cause: LowPowerCause?, ours: Bool, now: Date) -> LowPowerCause? {
+        if let c = cause { last = c; lastAt = now; return c }
+        guard ours, let held = last, now.timeIntervalSince(lastAt) < Self.linger else { last = nil; return nil }
+        return held
+    }
+}
+
+/// Ours, yet off on a settled battery (where the reading is the battery
+/// profile Ephedrine wrote) on two ticks in a row: the owner switched it off
+/// by hand. Then the marker is dropped without writing anything, so a later
+/// "off" can't undo an "on" the owner makes, and Ephedrine doesn't switch it
+/// on again until the cause has ended.
+public struct LowPowerOwnership {
+    /// Time after our switch-on for the reading to catch up.
+    public static let settle: TimeInterval = 10
+    private var offTicks = 0
+    public private(set) var ownerTookOver = false
+    public init() {}
+
+    /// True when the marker should be dropped (once per takeover).
+    public mutating func step(ours: Bool, settled: Bool, inFlight: Bool, sinceOurSwitchOn: TimeInterval, modeOn: Bool) -> Bool {
+        guard ours, settled, !inFlight, sinceOurSwitchOn >= Self.settle, !modeOn else { offTicks = 0; return false }
+        offTicks += 1
+        guard offTicks >= 2 else { return false }
+        offTicks = 0
+        ownerTookOver = true
+        return true
+    }
+
+    /// Call every tick with the (held) cause; a tick with none ends the takeover.
+    public mutating func noteCause(_ cause: LowPowerCause?) {
+        if cause == nil { ownerTookOver = false }
+    }
+}
+
+/// Wait before asking the sudoers rule again after it said no (`failures` in a
+/// row): 1, 5, then every 15 minutes. sudo logs each refusal.
+public func lowPowerRecheckDelay(failures: Int) -> TimeInterval {
+    failures <= 1 ? 60 : failures == 2 ? 300 : 900
+}

@@ -60,6 +60,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var batteryMisses = BatteryReadMisses()         // a battery that can't be read counts as at the floor
     var heatStop = HeatStop()                       // critical heat: keep nothing awake until it cools to serious
     var heatNotedAt = Date.distantPast
+    var heatLoggedAt = Date.distantPast             // the stop and cool-down log lines, at most every 30 min
+    var heatEpisodeLogged = false                   // this heat stop was logged, so its cool-down is too
     // Low Power Mode (LidMode.swift)
     var batterySettle = BatterySettle()             // on battery long enough to read the battery profile
     var lowPowerApplying = false
@@ -68,6 +70,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var lowPowerRuleOK: Bool?                       // the sudoers rule allows Low Power Mode; nil = not asked yet
     var lowPowerChecking = false
     var lowPowerCheckedAt = Date.distantPast
+    var lowPowerCheckFailures = 0                   // rule checks that said no in a row (lowPowerRecheckDelay)
+    var lowPowerHold = LowPowerHold()               // keeps a cause 5 min, so cooling doesn't flip it off and on
+    var lowPowerOwnership = LowPowerOwnership()     // notices the owner switching ours off by hand
+    var lowPowerOnAt: Date?                         // when our last switch-on finished
+    var lowPowerOffFailures = 0                     // switch-offs that failed in a row while the marker exists
     var awaySleep = AwaySleep()                     // "I'm leaving" sleeps once Claude is done
     var awayNeededCached = false                    // last tick: something still needed the Mac during "I'm leaving"
     var lastAwayCheck = Date()                      // a long gap since means the Mac was asleep
@@ -329,19 +336,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         if heatStop.step(thermal) {
             let wasHolding = awake.systemOn || awayMode || lidActive
             manualKeepAwake = false; keepAwakeUntil = nil; lidState.session = nil
-            logLine("too hot (critical), no longer keeping the Mac awake")
-            // It can hover at the edge of critical, so notify at most every 30 min.
+            // It can hover at the edge of critical, so log and notify at most every 30 min.
+            heatEpisodeLogged = Date().timeIntervalSince(heatLoggedAt) > 1800
+            if heatEpisodeLogged {
+                heatLoggedAt = Date()
+                logLine("too hot (critical), no longer keeping the Mac awake")
+            }
             if wasHolding && Date().timeIntervalSince(heatNotedAt) > 1800 {
                 heatNotedAt = Date()
                 heatNotify("Your Mac is very hot", "Ephedrine stopped keeping it awake so it can cool down and sleep.")
             }
-        } else if wasHot && !heatStop.stopped {
+        } else if wasHot && !heatStop.stopped && heatEpisodeLogged {
             logLine("cooled down (\(thermalStateText(thermal).lowercased())), keeping the Mac awake again when needed")
         }
-        let lowBattery = batteryStop.stopped || heatStop.stopped   // keep nothing awake: battery at its limit, or critical heat
+        let mustStop = batteryStop.stopped || heatStop.stopped   // keep nothing awake: battery at its limit, or critical heat
 
         let busy = activeSessionCount() > 0
-        let manualActive = !lowBattery && (manualKeepAwake || keepAwakeUntil != nil)
+        let manualActive = !mustStop && (manualKeepAwake || keepAwakeUntil != nil)
         var extraActive = false
         if settings.enabled && !busy && !manualActive && !settings.detectors.isEmpty {
             // Detectors spawn `ps`, so they run off-main; evaluate uses the
@@ -386,7 +397,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         // The master switch gates the automatic behavior only; an explicit
         // "Stay awake" / "I'm leaving" always does what it says. "I'm leaving"
         // holds the Mac only while Claude needs it (AwaySleep below).
-        let keepAwake = !lowBattery && (((settings.enabled || awayMode) && blocked) || manualActive)
+        let keepAwake = !mustStop && (((settings.enabled || awayMode) && blocked) || manualActive)
         if keepAwake {
             // Screen may sleep for pure background reasons: detector activity or a
             // session-limit wait (which can be hours), but not while Claude is
@@ -408,7 +419,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         // "I'm leaving": sleep once Claude (not a detector) has been done for a
         // minute. It used to hold the Mac awake until you came back, which on
         // 2026-10-09 and 2026-10-13 meant all night on battery.
-        let awayNeeded = !lowBattery && (claudeNeeds || manualActive || lidState.session != nil || checkIn.isOpen)
+        let awayNeeded = !mustStop && (claudeNeeds || manualActive || lidState.session != nil || checkIn.isOpen)
         awayNeededCached = awayNeeded
         if awaySleep.step(away: awayMode, needed: awayNeeded, fullyAwake: fullyAwake, now: Date()) {
             logLine("I'm leaving: nothing has needed the Mac for a minute, sleeping")
@@ -1083,7 +1094,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         if batteryStop.stopped {
             return awakeBatteryFloor(settings.batteryFloor) >= lidOnlyPluggedIn
                 ? "On battery: Ephedrine keeps the Mac awake only on the charger"
-                : "Battery at \(batteryPercent() ?? 0)%, letting the Mac sleep until it's plugged in"
+                : batteryPercent().map { "Battery at \($0)%, letting the Mac sleep until it's plugged in" }
+                    ?? "Battery level unknown, letting the Mac sleep until it's plugged in"
         }
         if manualKeepAwake { return "Awake until you turn it off" }
         if let until = keepAwakeUntil { return "Awake for \(fmtCountdown(Int(until.timeIntervalSinceNow))) more" }
@@ -1133,6 +1145,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     func menuWarnings() -> [String] {
         var out: [String] = []
         if lidActive && !fm.fileExists(atPath: lidMarkerPath) { out.append("Sleep is disabled by pmset, not by Ephedrine") }
+        if lowPowerOffFailures >= 2 && fm.fileExists(atPath: lowPowerMarkerPath) {
+            out.append("Low Power Mode is stuck on. Re-run lid setup, or turn it off in System Settings, Battery.")
+        }
         return out
     }
 

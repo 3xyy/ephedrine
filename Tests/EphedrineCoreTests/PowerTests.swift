@@ -69,3 +69,80 @@ import Testing
     #expect(step(false, true, nil) == nil); #expect(step(false, true, nil) == nil)   // on the charger
     #expect(step(true, true, nil) == nil); #expect(step(true, true, 30) == 30); #expect(step(true, true, nil) == nil)   // a good read starts over
 }
+
+// Fix round 1 (R30): Low Power Mode cools the Mac and so removes its own heat
+// cause. Holding a cause 5 minutes after it last held stops the on/off cycling.
+@Test func lowPowerHoldKeepsACauseFiveMinutes() {
+    var h = LowPowerHold()
+    let t0 = Date(timeIntervalSince1970: 1000)
+    func step(_ c: LowPowerCause?, ours: Bool = true, _ t: TimeInterval) -> LowPowerCause? { h.step(cause: c, ours: ours, now: t0 + t) }
+    #expect(step(.heat, 0) == .heat)
+    #expect(step(nil, 60) == .heat)
+    #expect(step(nil, 299) == .heat)
+    #expect(step(nil, 301) == nil)
+}
+@Test func lowPowerHoldNewCauseReplacesHeld() {
+    var h = LowPowerHold()
+    let t0 = Date(timeIntervalSince1970: 1000)
+    func step(_ c: LowPowerCause?, _ t: TimeInterval) -> LowPowerCause? { h.step(cause: c, ours: true, now: t0 + t) }
+    #expect(step(.heat, 0) == .heat)
+    #expect(step(.battery, 60) == .battery)
+    #expect(step(nil, 120) == .battery)
+    #expect(step(nil, 60 + 299) == .battery)   // timed from the battery cause's last tick
+    #expect(step(nil, 60 + 301) == nil)
+}
+@Test func lowPowerHoldOnlyWhileOurs() {
+    var h = LowPowerHold()
+    let t0 = Date(timeIntervalSince1970: 1000)
+    func step(_ c: LowPowerCause?, ours: Bool, _ t: TimeInterval) -> LowPowerCause? { h.step(cause: c, ours: ours, now: t0 + t) }
+    #expect(step(.heat, ours: false, 0) == .heat)
+    #expect(step(nil, ours: false, 60) == nil)
+    // The cause on the tick that switched it on still counts once it's ours.
+    var h2 = LowPowerHold()
+    func step2(_ c: LowPowerCause?, ours: Bool, _ t: TimeInterval) -> LowPowerCause? { h2.step(cause: c, ours: ours, now: t0 + t) }
+    #expect(step2(.heat, ours: false, 0) == .heat)
+    #expect(step2(nil, ours: true, 3) == .heat)
+}
+
+// Fix round 1 (R31): ours, on a settled battery, reading off on two ticks in a
+// row means the owner switched it off by hand. The marker is dropped (nothing
+// is written), and it isn't switched on again until the cause has ended.
+@Test func ownershipDropsAfterTwoOffTicks() {
+    var o = LowPowerOwnership()
+    func step(since: TimeInterval = 60, on: Bool) -> Bool {
+        o.step(ours: true, settled: true, inFlight: false, sinceOurSwitchOn: since, modeOn: on)
+    }
+    #expect(!step(since: 10, on: false))
+    #expect(step(since: 10, on: false))
+    #expect(o.ownerTookOver)
+}
+@Test func ownershipNeverDropsWhileUnsure() {
+    var o = LowPowerOwnership()
+    func step(ours: Bool = true, settled: Bool = true, inFlight: Bool = false, since: TimeInterval = 60, on: Bool) -> Bool {
+        o.step(ours: ours, settled: settled, inFlight: inFlight, sinceOurSwitchOn: since, modeOn: on)
+    }
+    for _ in 0..<3 { #expect(!step(inFlight: true, on: false)) }
+    for _ in 0..<3 { #expect(!step(settled: false, on: false)) }
+    for _ in 0..<3 { #expect(!step(since: 9, on: false)) }
+    for _ in 0..<3 { #expect(!step(ours: false, on: false)) }
+    #expect(!step(on: false)); #expect(!step(on: true)); #expect(!step(on: false))   // an on-reading starts the count over
+    #expect(!o.ownerTookOver)
+}
+@Test func ownerTakeoverLastsUntilTheCauseEnds() {
+    var o = LowPowerOwnership()
+    func step(on: Bool) -> Bool { o.step(ours: true, settled: true, inFlight: false, sinceOurSwitchOn: 60, modeOn: on) }
+    _ = step(on: false)
+    #expect(step(on: false))
+    o.noteCause(.heat)
+    #expect(o.ownerTookOver)
+    o.noteCause(nil)
+    #expect(!o.ownerTookOver)
+}
+
+// Fix round 1 (R32): sudo logs every failed rule check, so they back off.
+@Test func ruleRecheckBacksOff() {
+    #expect(lowPowerRecheckDelay(failures: 1) == 60)
+    #expect(lowPowerRecheckDelay(failures: 2) == 300)
+    #expect(lowPowerRecheckDelay(failures: 3) == 900)
+    #expect(lowPowerRecheckDelay(failures: 9) == 900)
+}
