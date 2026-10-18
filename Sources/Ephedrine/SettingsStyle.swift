@@ -6,7 +6,8 @@ import SwiftUI
 
 /// The window's colors. Each is a dynamic NSColor, resolved on every draw, so
 /// it follows the system appearance. Orange text and glyphs use `clay`, which
-/// is darker in light mode so it stays readable on white; fills use `orange`.
+/// is darker in light mode so it stays readable on white; fills use `orange`,
+/// except buttons with white text, which use the darker `clayFill`.
 enum SettingsColors {
     private static func rgb(_ hex: UInt32, _ alpha: CGFloat = 1) -> NSColor {
         NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
@@ -27,11 +28,12 @@ enum SettingsColors {
     static let field = dynamic(rgb(0xF2F1EE), rgb(0x1F1F21))
     static let text = dynamic(rgb(0x1D1D1F), rgb(0xF2F2F4))
     static let secondaryText = dynamic(rgb(0x3C3C43, 0.8), rgb(0xEBEBF5, 0.72))
-    static let tertiaryText = dynamic(rgb(0x3C3C43, 0.66), rgb(0xEBEBF5, 0.58))   // row subtitles
+    static let tertiaryText = dynamic(rgb(0x3C3C43, 0.72), rgb(0xEBEBF5, 0.58))   // row subtitles: 4.7:1 on a white card, 5.0:1 on a dark one
     static let clay = dynamic(rgb(0xC4623F), rgb(0xD97757))                        // orange text and glyphs
     static let claySoft = dynamic(rgb(0xD97757, 0.16), rgb(0xD97757, 0.22))       // the selected tab
     static let clayOnSoft = dynamic(rgb(0x9E472A), rgb(0xE08766))                  // the selected tab's label: 4.5:1 on claySoft
     static let orange = Color(nsColor: claudeOrange)                               // orange fills
+    static let clayFill = dynamic(rgb(0xA9512F), rgb(0xB85A38))                    // filled buttons: white text at 5.4:1 / 4.6:1
     static let warn = dynamic(rgb(0xA65200), rgb(0xFF9F0A))
     static let ok = dynamic(rgb(0x1E7E34), rgb(0x30D158))
     static let focusRing = Color(nsColor: .keyboardFocusIndicatorColor)
@@ -96,7 +98,8 @@ private struct ClaySwitch: View {
         .onTapGesture { if isEnabled { isOn.toggle() } }
         .animation(.easeOut(duration: 0.15), value: isOn)
         // Full keyboard access: Tab reaches the switch, Space flips it, and a ring shows where it is.
-        .focusable(isEnabled)
+        // `.activate`: focus comes from the keyboard only, so a click leaves no ring behind.
+        .focusable(isEnabled, interactions: .activate)
         .focused($focused)
         .focusEffectDisabled()
         .onKeyPress(.space) {
@@ -135,7 +138,7 @@ private struct SettingsButtonBody<Label: View>: View {
             .padding(.horizontal, banner ? 14 : kind == .primary ? 12 : 10)
             .frame(height: banner ? 30 : 26)
             .background(RoundedRectangle(cornerRadius: banner ? 8 : 6, style: .continuous)
-                .fill(kind == .banner ? SettingsColors.orange : kind == .primary ? SettingsColors.clay : SettingsColors.fill))
+                .fill(kind == .secondary ? SettingsColors.fill : SettingsColors.clayFill))
             .overlay(RoundedRectangle(cornerRadius: banner ? 8 : 6, style: .continuous)
                 .fill(Color.black.opacity(pressed ? 0.15 : 0)))
             .contentShape(Rectangle())
