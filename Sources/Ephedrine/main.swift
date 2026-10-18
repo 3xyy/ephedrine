@@ -1023,6 +1023,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        durationPanel.close()
         if settings.setupDone && (lastUsageFetch == nil || Date().timeIntervalSince(lastUsageFetch!) > 60) { fetchUsage() }
         refreshDisplaySleepIfStale()
         menu.removeAllItems()

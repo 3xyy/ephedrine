@@ -75,13 +75,10 @@ final class DurationPanelController: NSObject, NSTextFieldDelegate {
     private var boxes: [DurationFieldBox] = []
     private var fields: [NSTextField] { boxes.map(\.field) }
     private var onSubmit: ((TimeInterval) -> Void)?
-    private var previousApp: NSRunningApplication?
 
     func show(below button: NSStatusBarButton, mode: Mode, onSubmit: @escaping (TimeInterval) -> Void) {
         panel?.close()
         self.onSubmit = onSubmit
-        let front = NSWorkspace.shared.frontmostApplication
-        previousApp = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : front
 
         let inset = MenuMetrics.inset
         let panel = DurationPanel(contentRect: .zero, styleMask: [.nonactivatingPanel, .borderless],
@@ -95,8 +92,6 @@ final class DurationPanelController: NSObject, NSTextFieldDelegate {
         panel.onClose = { [weak self] in
             guard let self = self else { return }
             self.panel = nil
-            self.previousApp?.activate()
-            self.previousApp = nil
         }
         panel.onFocusChange = { [weak self] in self?.syncFocus() }
 
@@ -156,12 +151,12 @@ final class DurationPanelController: NSObject, NSTextFieldDelegate {
             panel.setFrameOrigin(origin)
         }
         self.panel = panel
-        // Activation is kept because a nonactivating panel can't take typing while another app is
-        // active; the previous app is re-activated when the panel closes.
-        NSApp.activate(ignoringOtherApps: true)
+        // Non-activating but key: it takes typing without pulling focus from the user's app.
         panel.makeKeyAndOrderFront(nil)
         _ = panel.makeFirstResponder(fields[1])
     }
+
+    func close() { panel?.close() }
 
     private func submit() {
         guard fields.count == 3,
