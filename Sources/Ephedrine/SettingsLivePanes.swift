@@ -85,7 +85,24 @@ struct LidPane: View {
                     }
                     Toggle(isOn: $settings.lidPauseApps) {
                         Text("Pause other apps while it's shut")
-                        Tip("Like “I'm leaving”. They resume when you open the lid. Not with an external display attached.")
+                        Tip("Like “I'm leaving”. They resume when you open the lid, or once the Mac is no longer kept awake. Not with an external display attached.")
+                    }
+                    Toggle(isOn: $settings.lidMute) {
+                        Text("Mute the sound while it's shut")
+                        Tip("The sound comes back when you open the lid. If you unmute it yourself before then, it stays the way you set it.")
+                    }
+                    Tip("With the lid shut the built-in mic is cut off, so calls need AirPods or an external mic.")
+                    Toggle(isOn: $settings.lidKeyboardOff) {
+                        Text("Turn the keyboard light off while it's shut")
+                        Tip("It comes back on at the same level when you open the lid.")
+                    }
+                    .disabled(KeyboardBacklight.shared.refusal != nil)
+                    if let why = KeyboardBacklight.shared.refusal {
+                        Tip("Not available on this version of macOS, so Ephedrine leaves the keyboard light alone (\(why)).")
+                    }
+                    Toggle(isOn: $settings.lidDockerRule) {
+                        Text("Pause Docker while it's shut")
+                        Tip("Only when no container is running. Docker is asked twice, and if it doesn't answer it keeps running. It resumes when you open the lid.")
                     }
                     Toggle(isOn: $settings.lowPowerOnLidShut) {
                         Text("Low Power Mode while the lid is shut")

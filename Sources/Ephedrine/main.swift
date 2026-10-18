@@ -47,6 +47,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var lidRetryAfter = Date.distantPast
     var lidGuardNotedAt = Date.distantPast
     var lidPaused = false
+    var lidHoldActive = false                       // the lid-shut hold is on (updateLidPause): muted, keys dark, paused
+    var lidHoldGeneration = 0                       // bumped at each hold start and end (a Docker check from an older hold is dropped)
+    var dockerPaused = false                        // the Docker rule stopped Docker Desktop; its pids are in pausedProcesses
+    var lastExtrasRetry = Date.distantPast          // last retry of outputs that weren't connected when the hold ended
     var lidLockedThisClose = false
     var lidFlipGeneration = 0                       // newest lid on/off request (stale completions are ignored)
     var terminalScanError = ""                      // main-thread copy of the last scan's osascript error
@@ -185,6 +189,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         settings.onChange = { [weak self] key in self?.settingChanged(key) }
         installMainMenu()
         recoverFromInterruptedAway()
+        // A mute or a dark keyboard a crash left behind, while the Mac can be
+        // in use (lid open, or a desk setup). With the lid shut and nothing
+        // attached, the hold or the lid opening restores them; the watchdog
+        // covers a crash till then.
+        if !lidIsClosed() || externalDisplayActive() { restoreLidExtras() }
+        updateWatchdog()
         // `pkill`/`kill` (build.sh, logout scripts) → a normal quit, so
         // applicationWillTerminate un-pauses apps and releases lid-closed mode.
         signal(SIGTERM, SIG_IGN)
@@ -229,8 +239,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
     func applicationWillTerminate(_ note: Notification) {
         awake.apply(system: false, display: false)
-        if awayMode || lidPaused { resumeApps(); restoreBrightness() }   // never leave apps frozen
+        if awayMode || lidPaused || !pausedProcesses.isEmpty { resumeApps(); restoreBrightness() }   // never leave apps (or Docker) frozen
         clearAwayState()
+        restoreLidExtras()
         releaseLidOnQuit()
         releaseLowPower("quitting")
         logLine("Ephedrine quit")
@@ -389,6 +400,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let blocked = busy || extraActive || claudeWorkingNow || limitWaitNow
         let claudeNeeds = busy || claudeWorkingNow || limitWaitNow || (autoContinue && retryPending)
         updateLidMode(claudeBusy: settings.enabled && claudeNeeds, battery: charge)
+        // An output that wasn't connected when the hold ended is unmuted once
+        // it's back; a launch with the lid shut leaves the keyboard light to here too.
+        // Never during the hold, and only while the Mac can be in use.
+        if !lidHoldActive && Date().timeIntervalSince(lastExtrasRetry) >= 30
+            && (mutedOutputsPending() || fm.fileExists(atPath: keyboardBacklightPath))
+            && (!lidIsClosed() || externalDisplayActive()) {
+            lastExtrasRetry = Date()
+            restoreLidExtras()
+        }
 
         if blocked && !wasBlocked { armed = false; cancelPendingSleep() }
         if !blocked && wasBlocked { armed = true; idleSince = Date(); cancelPendingSleep(); logLine("work finished, sleep countdown armed") }
@@ -885,9 +905,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let live = toResume(pausedProcesses, in: procs)
         for p in live { kill(p.pid, SIGCONT) }
         let skipped = pausedProcesses.count - live.count
-        logLine("resumed \(pausedAppCount) apps (\(live.count) processes" + (skipped > 0 ? ", skipped \(skipped) that exited" : "") + ")")
+        logLine("resumed \(pausedAppCount) apps" + (dockerPaused ? " and Docker" : "")
+                + " (\(live.count) processes" + (skipped > 0 ? ", skipped \(skipped) that exited" : "") + ")")
         pausedProcesses.removeAll()
         pausedNames.removeAll()
+        dockerPaused = false
     }
 
     // ── Away crash-recovery: if we die while apps are SIGSTOPped / screen is
@@ -1138,7 +1160,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var heldState: (paused: Int, dockerPaused: Bool, muted: Bool, lowPower: Bool, lastGap: TimeInterval?) {
         // Ours and actually on: on the charger, the battery profile we set isn't the one in use.
         let lowPower = fm.fileExists(atPath: lowPowerMarkerPath) && ProcessInfo.processInfo.isLowPowerModeEnabled
-        return (pausedAppCount, false, false, lowPower, nil)
+        return (pausedAppCount, dockerPaused, mutedOutputsPending(), lowPower, nil)
     }
 
     /// Plain warning lines for the status card (no "⚠"; the card draws the triangle).

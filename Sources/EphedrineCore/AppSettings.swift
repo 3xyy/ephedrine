@@ -35,6 +35,12 @@ public final class AppSettings: ObservableObject {
     @Published public var lowPowerOnLidShut: Bool { didSet { save(lowPowerOnLidShut, "lowPowerOnLidShut") } }
     /// On battery, switch Low Power Mode on below this % while keeping the Mac awake; 0 = off.
     @Published public var lowPowerFloor: Int { didSet { save(lowPowerFloor, "lowPowerFloor") } }
+    /// Mute the sound while the lid-shut hold lasts.
+    @Published public var lidMute: Bool { didSet { save(lidMute, "lidMute") } }
+    /// Turn the built-in keyboard's light off while the lid-shut hold lasts.
+    @Published public var lidKeyboardOff: Bool { didSet { save(lidKeyboardOff, "lidKeyboardOff") } }
+    /// Pause Docker Desktop while the lid-shut hold lasts, when no container runs.
+    @Published public var lidDockerRule: Bool { didSet { save(lidDockerRule, "lidDockerRule") } }
     /// Ask GitHub every few hours whether a newer version is out.
     @Published public var checkForUpdates: Bool { didSet { save(checkForUpdates, "checkForUpdates") } }
     /// The first-run setup screen was finished (or skipped).
@@ -71,6 +77,9 @@ public final class AppSettings: ObservableObject {
         lidRemoteCheckIn = bool("lidRemoteCheckIn", false)
         lowPowerOnLidShut = bool("lowPowerOnLidShut", true)
         lowPowerFloor = defaults.object(forKey: "lowPowerFloor") as? Int ?? 40
+        lidMute = bool("lidMute", true)
+        lidKeyboardOff = bool("lidKeyboardOff", true)
+        lidDockerRule = bool("lidDockerRule", false)
         checkForUpdates = bool("checkForUpdates", true)
         setupDone = bool("setupDone", false)
         menuBarIconStyle = defaults.string(forKey: "menuBarIconStyle").flatMap(MenuBarIconStyle.init(rawValue:)) ?? .mono
