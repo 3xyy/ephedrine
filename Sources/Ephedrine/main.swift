@@ -1062,7 +1062,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let tint: NSColor = (iconActive || awayMode || lidActive) ? claudeOrange : .secondaryLabelColor
         guard let name = iconChoice(active: iconActive).symbol else {
             let size = NSSize(width: 20, height: 20)
-            return (NSImage(size: size, flipped: false) { r in drawAwakeMug(in: r, mug: claudeOrange, spark: nil); return true }, tint)
+            return (NSImage(size: size, flipped: true) { r in drawCupGlyph(in: r, cup: claudeOrange, spark: claudeOrange); return true }, tint)
         }
         return (cardSymbol(name, tint), tint)
     }

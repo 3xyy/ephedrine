@@ -100,10 +100,10 @@ final class StatusCardView: NSView {
             for chip in status.chips {
                 let icon = symbol(Self.symbolName(chip.kind), size: 11, color: .secondaryLabelColor)
                 let tw = ceil(attributed(chip.text, Self.chipFont, .labelColor).size().width)
-                let cw = 8 + (icon?.size.width ?? 0) + 5 + tw + 8
+                let cw = 6 + (icon?.size.width ?? 0) + 4 + tw + 6
                 if x > MenuMetrics.inset && x + cw > maxX { x = MenuMetrics.inset; y += 22 + 5 }
                 l.chips.append((NSRect(x: x, y: y, width: cw, height: 22), chip))
-                x += cw + 5
+                x += cw + 4
             }
             y += 22
         }
@@ -147,7 +147,7 @@ final class StatusCardView: NSView {
         for (rect, chip) in layout.chips {
             NSColor.labelColor.withAlphaComponent(0.07).setFill()
             NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).fill()
-            var x = rect.minX + 8
+            var x = rect.minX + 6
             if let icon = symbol(Self.symbolName(chip.kind), size: 11, color: .secondaryLabelColor) {
                 let r = NSRect(x: x, y: rect.midY - icon.size.height / 2, width: icon.size.width, height: icon.size.height)
                 icon.draw(in: r, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
@@ -166,7 +166,7 @@ final class StatusCardView: NSView {
                 // aligned with the first text line (16 pt tall)
                 let r = NSRect(x: x, y: rect.minY + (16 - icon.size.height) / 2, width: icon.size.width, height: icon.size.height)
                 icon.draw(in: r, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
-                x += icon.size.width + 5
+                x += icon.size.width + 4
             }
             attributed(text, Self.smallFont, menuWarningColor)
                 .draw(with: NSRect(x: x, y: rect.minY, width: rect.maxX - x, height: rect.height), options: opts)
