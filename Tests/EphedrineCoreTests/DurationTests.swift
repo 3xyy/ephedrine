@@ -25,4 +25,9 @@ import Foundation
     #expect(fmtRemaining(5400) == "1:30:00")
     #expect(fmtRemaining(86400 * 2 + 3 * 3600 + 59) == "2d 3h")
     #expect(fmtRemaining(-3) == "0s")
+    #expect(fmtRemaining(59) == "59s")
+    #expect(fmtRemaining(3599) == "59:59")
+    #expect(fmtRemaining(3600) == "1:00:00")
+    #expect(fmtRemaining(86399) == "23:59:59")
+    #expect(fmtRemaining(86400) == "1d 0h")
 }

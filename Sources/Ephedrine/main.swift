@@ -1153,7 +1153,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         logLine("keep awake for \(fmtDuration(Int(seconds)))" + (lidSetupOK ? ", lid can be shut" : "")); evaluate()
     }
     func addStayAwake(seconds: TimeInterval) {
-        guard let current = keepAwakeUntil else { return }
+        // The timer ran out while the Add panel was open: start a fresh one of that length.
+        guard let current = keepAwakeUntil else {
+            if !manualKeepAwake { stayAwake(seconds: seconds) }
+            return
+        }
         let until = extendedUntil(current, by: seconds, now: Date())
         keepAwakeUntil = until
         if lidSetupOK { lidState.session = .until(until) }
