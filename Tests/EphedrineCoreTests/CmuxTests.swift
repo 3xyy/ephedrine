@@ -225,7 +225,12 @@ private let cmuxTreeSample = """
     let id = "5D2F7A10-8E3B-4C6D-A1F2-3B4C5D6E7F01"
     #expect(cmuxListArgs == ["--json", "--id-format", "uuids", "tree", "--all"])
     #expect(cmuxReadArgs(id) == ["read-screen", "--surface", id])
+    #expect(cmuxLiveTailArgs(id) == ["read-screen", "--surface", id, "--lines", "100"])
     #expect(cmuxInputStateArgs(id) == ["rpc", "surface.input_state", "{\"surface_id\":\"\(id)\"}"])
+    // Never "{}": cmux would answer for whatever surface is focused.
+    #expect(cmuxInputStateArgs("surface:1") == nil)
+    #expect(cmuxInputStateArgs("") == nil)
+    #expect(cmuxInputStateArgs("5D2F7A10\",\"x\":\"y") == nil)
     // The text goes after "--", so it can never be read as a flag.
     #expect(cmuxSendArgs(id, "continue", force: false) == ["send", "--surface", id, "--", "continue"])
     #expect(cmuxSendArgs(id, "1", force: true) == ["send", "--surface", id, "--force", "--", "1"])
@@ -333,3 +338,103 @@ private func inputStateJSON(_ state: String, agent: Bool = true, terminal: Bool 
     }
     #expect(forced == ["limitMenuAnswer dialog true true"])
 }
+
+// ── The live tail: the bottom of a cmux pane, read right before typing ──
+
+private let limitHeader = "You've hit your session limit · resets 3am (America/Los_Angeles)"
+private let permissionDialog = """
+╭───────────────────────────────────────────╮
+│ Bash command                              │
+│   rm -rf build                            │
+│ Do you want to proceed?                   │
+│ ❯ 1. Yes                                  │
+│   2. No, and tell Claude what to do       │
+╰───────────────────────────────────────────╯
+"""
+private let limitMenuLive = """
+\(limitHeader)
+
+❯ 1. Stop and wait for limit to reset
+  2. Upgrade your plan
+
+Enter to confirm · Esc to cancel
+"""
+private let idlePrompt = """
+⏺ Done. The tests pass.
+
+────────────────────────────────────────
+❯\u{00A0}
+────────────────────────────────────────
+  ? for shortcuts
+"""
+private let errorAtPrompt = """
+⏺ Reading the file
+⏺ API Error: 529 {"type":"error","error":{"type":"overloaded_error"}}
+
+────────────────────────────────────────
+❯\u{00A0}
+────────────────────────────────────────
+  ? for shortcuts
+"""
+
+@Test func liveTailLimitMenu() {
+    let wait = LimitChoice.waitForReset("1")
+    // The limit menu at the bottom: proceed, even with blank rows under it.
+    #expect(cmuxLiveTailShows(.limitMenu(wait), in: limitMenuLive))
+    #expect(cmuxLiveTailShows(.limitMenu(wait), in: limitMenuLive + String(repeating: "\n", count: 40)))
+    #expect(cmuxLiveTailShows(.limitMenu(.claudeAutoContinue("2")), in: """
+        \(limitHeader)
+
+        ❯ 1. Stop and wait for limit to reset
+          2. Wait here, then continue automatically when the limit resets
+        """))
+    // A different option than the scan chose: skip.
+    #expect(!cmuxLiveTailShows(.limitMenu(.waitForReset("2")), in: limitMenuLive))
+    // A live permission dialog at the bottom: skip, alone or under an old limit-menu frame.
+    #expect(!cmuxLiveTailShows(.limitMenu(wait), in: permissionDialog))
+    #expect(!cmuxLiveTailShows(.limitMenu(wait), in: limitMenuLive + "\n" + permissionDialog))
+    #expect(!cmuxLiveTailShows(.limitMenu(wait), in: limitHeader + "\n" + permissionDialog))
+    // An idle prompt, or the limit text with no menu: skip.
+    #expect(!cmuxLiveTailShows(.limitMenu(wait), in: idlePrompt))
+    #expect(!cmuxLiveTailShows(.limitMenu(wait), in: limitHeader + "\n" + idlePrompt))
+    // Below the limit menu, a second menu with its own cursor (numbers that don't repeat),
+    // a numbered list without a cursor that repeats its numbers, or a question with no options: skip.
+    #expect(!cmuxLiveTailShows(.limitMenu(wait), in: limitMenuLive + "\nAllow this tool?\n❯ 3. Yes\n  4. No"))
+    #expect(!cmuxLiveTailShows(.limitMenu(wait), in: limitMenuLive + "\nAllow this tool?\n  1. Yes\n  2. No"))
+    #expect(!cmuxLiveTailShows(.limitMenu(wait), in: limitMenuLive
+                               + "\nWelcome back\nYour session was restored.\nSome settings changed.\nPress enter to continue"))
+    // The limit menu drawn inside a box: still the limit menu.
+    #expect(cmuxLiveTailShows(.limitMenu(wait), in: """
+        \(limitHeader)
+        ╭──────────────────────────────────────────╮
+        │ ❯ 1. Stop and wait for limit to reset    │
+        │   2. Upgrade your plan                   │
+        ╰──────────────────────────────────────────╯
+        """))
+    // The menu with no limit text above it (some other "wait" menu): skip.
+    #expect(!cmuxLiveTailShows(.limitMenu(wait), in: "❯ 1. Stop and wait for limit to reset\n  2. Upgrade your plan"))
+    #expect(cmuxLiveTrigger(.limitMenu(wait)).purpose == .limitMenuAnswer)
+    #expect(CmuxLiveTrigger.limitMenu(wait).missing == "menu on screen isn't the usage-limit menu")
+}
+
+@Test func liveTailContinue() {
+    // An unanswered API error above an empty prompt: proceed.
+    #expect(cmuxLiveTailShows(.apiError, in: errorAtPrompt))
+    #expect(cmuxLiveTailShows(.apiError, in: errorAtPrompt + String(repeating: "\n", count: 40)))
+    // The live bottom is an idle prompt (the error was only in a scrolled view), or a permission dialog: skip.
+    #expect(!cmuxLiveTailShows(.apiError, in: idlePrompt))
+    #expect(!cmuxLiveTailShows(.apiError, in: errorAtPrompt + "\n" + permissionDialog))
+    // A boxed question whose cursor isn't ❯ (so the shared detectors don't see a prompt or a menu): skip.
+    #expect(!cmuxLiveTailShows(.apiError, in: errorAtPrompt + "\n│ Allow this?   │\n│ › 1. Yes      │\n│   2. No       │"))
+    #expect(!cmuxLiveTailShows(.apiError, in: ""))
+    // After a reset: the limit text and a plain prompt below it.
+    #expect(cmuxLiveTailShows(.limitReset, in: limitHeader + "\n" + idlePrompt))
+    #expect(!cmuxLiveTailShows(.limitReset, in: idlePrompt))            // limit text gone: someone moved on
+    #expect(!cmuxLiveTailShows(.limitReset, in: limitMenuLive))         // the menu is still open
+    #expect(!cmuxLiveTailShows(.limitReset, in: limitHeader + "\n" + permissionDialog))
+    #expect(cmuxLiveTrigger(.apiError).purpose == .continuePrompt)
+    #expect(cmuxLiveTrigger(.limitReset).purpose == .continuePrompt)
+}
+
+private func cmuxLiveTrigger(_ t: CmuxLiveTrigger) -> CmuxLiveTrigger { t }
+

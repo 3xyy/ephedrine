@@ -28,11 +28,19 @@ public func cmuxEnterArgs(_ id: String, force: Bool) -> [String] {
     ["send-key", "--surface", id] + (force ? ["--force"] : []) + ["enter"]
 }
 
+/// The bottom of a pane, whatever the owner has scrolled to: with --lines,
+/// read-screen takes the last N lines of the whole buffer (scrollback plus the
+/// live screen). cmux captures the whole buffer either way, so a roomy N costs
+/// nothing more and leaves space for blank rows under the cursor.
+public func cmuxLiveTailArgs(_ id: String) -> [String] { ["read-screen", "--surface", id, "--lines", "100"] }
+
 /// What a surface's prompt holds on its live screen (cmux reads the bottom of
-/// the terminal for this, not the part the owner may have scrolled to).
-public func cmuxInputStateArgs(_ id: String) -> [String] {
-    let params = (try? JSONSerialization.data(withJSONObject: ["surface_id": id]))
-        .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+/// the terminal for this, not the part the owner may have scrolled to). nil
+/// unless `id` is a UUID: without a surface, cmux answers for the focused one.
+public func cmuxInputStateArgs(_ id: String) -> [String]? {
+    guard UUID(uuidString: id) != nil,
+          let data = try? JSONSerialization.data(withJSONObject: ["surface_id": id]),
+          let params = String(data: data, encoding: .utf8) else { return nil }
     return ["rpc", "surface.input_state", params]
 }
 
@@ -70,6 +78,68 @@ public enum CmuxTypePurpose: Equatable {
 }
 
 public enum CmuxTypeDecision: Equatable { case send, force, skip(String) }
+
+/// What a send is answering, checked once more on the pane's live tail
+/// (cmuxLiveTailShows) right before typing.
+public enum CmuxLiveTrigger: Equatable {
+    case apiError                 // "continue" for an unanswered API error
+    case limitMenu(LimitChoice)   // this "wait" option of Claude Code's usage-limit menu
+    case limitReset               // "continue" at a plain prompt once a usage limit has reset
+
+    public var purpose: CmuxTypePurpose {
+        if case .limitMenu = self { return .limitMenuAnswer }
+        return .continuePrompt
+    }
+    /// The log's reason when the live tail doesn't show it.
+    public var missing: String {
+        switch self {
+        case .apiError: return "the live screen doesn't show an unanswered API error"
+        case .limitMenu: return "menu on screen isn't the usage-limit menu"
+        case .limitReset: return "the live screen isn't the usage limit at a plain prompt"
+        }
+    }
+}
+
+/// A numbered option line of a select menu, box borders allowed ("│ ❯ 1. Yes │").
+private func liveOption(_ raw: String) -> (cursor: Bool, number: String, label: String)? {
+    let s = raw.trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: "│┃")))
+    guard let g = regexGroups("^([❯›▸▶]?)\\s*([1-9])[.)]\\s+(\\S.*?)$", s) else { return nil }
+    return (!g[1].isEmpty, g[2], g[3])
+}
+
+/// Whether the pane's live tail (the bottom of its buffer, from
+/// cmuxLiveTailArgs) still shows what the scan saw. Trailing blank rows are
+/// dropped first. A menu answer needs the usage-limit text, then a single
+/// menu below it (one selection cursor, no repeated numbers, at most a footer
+/// after it) offering the chosen option; a permission prompt or any other
+/// question at the bottom fails that. "continue" needs no menu or question
+/// at the bottom at all.
+public func cmuxLiveTailShows(_ trigger: CmuxLiveTrigger, in tail: String) -> Bool {
+    var lines = tail.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    let blank: (String) -> Bool = { $0.trimmingCharacters(in: .whitespaces).isEmpty }
+    while let last = lines.last, blank(last) { lines.removeLast() }
+    lines = Array(lines.suffix(60))
+    let text = lines.joined(separator: "\n")
+    let menuOpen = lines.suffix(20).contains { liveOption($0)?.cursor == true }
+    switch trigger {
+    case .apiError:
+        return !menuOpen && claudeErrorStatus(text) == .unanswered
+    case .limitReset:
+        return !menuOpen && usageLimitVisible(text) && claudeUIVisible(text) && !menuVisible(text)
+            && !claudeWorkingVisible(text) && !claudeAutoResumeVisible(text)
+    case .limitMenu(let choice):
+        let recent = Array(lines.suffix(25))
+        guard let h = recent.lastIndex(where: { usageLimitVisible($0) }) else { return false }
+        let after = Array(recent[(h + 1)...])
+        let opts = after.indices.compactMap { i in liveOption(after[i]).map { (i, $0) } }
+        guard let lastOption = opts.last?.0,
+              opts.filter({ $0.1.cursor }).count == 1,
+              Set(opts.map { $0.1.number }).count == opts.count,
+              after[(lastOption + 1)...].filter({ !blank($0) }).count <= 3 else { return false }
+        let menu = opts.map { "\($0.1.cursor ? "❯" : " ") \($0.1.number). \($0.1.label)" }.joined(separator: "\n")
+        return limitMenuChoice(menu) == choice
+    }
+}
 
 /// The last word before typing into a cmux pane, from its live input state
 /// read right before. "continue" goes only into an empty Claude Code prompt,

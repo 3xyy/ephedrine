@@ -129,6 +129,7 @@ struct CmuxRead {
     var access: CmuxAccess?
     var listed: [CmuxSurface] = []
     var tabs: [(CmuxSurface, String)] = []   // the listed panes whose screen was read
+    var unreadable: Set<String> = []         // listed panes whose read-screen failed outright (not a timeout)
     var stalled = false                      // a call timed out or the budget ran out
     var why = ""                             // what stalled, for the log
 }
@@ -156,31 +157,33 @@ func cmuxSurfacesSnapshot(cli: String, password: String, budget: TimeInterval = 
         guard left > 0.5 else { res.stalled = true; res.why = "the \(Int(budget))s read budget ran out"; break }
         let r = runCmux(cli, cmuxReadArgs(s.id), password: password, timeout: min(5, left))
         if r.timedOut { res.stalled = true; res.why = cmuxWhy(r); break }
-        if r.status == 0 { res.tabs.append((s, r.out)) }   // closed since the listing, or not readable: skip it
+        // A definite error (closed since the listing, hibernated) isn't a stall:
+        // the pane's state ages out as for a closed one.
+        if r.status == 0 { res.tabs.append((s, r.out)) } else { res.unreadable.insert(s.id) }
     }
     return res
 }
 
 /// The pane's live input state (bottom of its screen, not the scrolled view).
 func cmuxInputState(cli: String, password: String, surfaceID: String) -> CmuxInputState? {
-    let r = runCmux(cli, cmuxInputStateArgs(surfaceID), password: password)
+    guard let args = cmuxInputStateArgs(surfaceID) else { return nil }
+    let r = runCmux(cli, args, password: password)
     guard !r.timedOut, r.status == 0 else { return nil }
     return parseCmuxInputState(r.out)
 }
 
 /// Type text, then Enter, into one cmux surface. In order, right before
-/// typing: re-read the pane and check `stillWanted` on that text (the scan's
-/// read can be seconds old), ask cmux what the live prompt holds
+/// typing: read the bottom of the pane (not the scrolled view the scan saw)
+/// and check `trigger` there, ask cmux what the live prompt holds
 /// (cmuxTypeDecision), and re-check the Mac is fully awake.
-func sendToCmux(_ text: String, surfaceID: String, purpose: CmuxTypePurpose,
-                canTypeNow: () -> Bool, stillWanted: (String) -> Bool) -> SendResult {
+func sendToCmux(_ text: String, surfaceID: String, trigger: CmuxLiveTrigger, canTypeNow: () -> Bool) -> SendResult {
     guard let cli = runningCmuxCLI() else { return .skipped("cmux isn't running") }
     guard let pw = CmuxKeychain.read().password else { return .skipped("no cmux password could be read") }
-    let screen = runCmux(cli, cmuxReadArgs(surfaceID), password: pw)
-    guard !screen.timedOut, screen.status == 0 else { return .skipped("couldn't re-read the pane: " + cmuxWhy(screen)) }
-    guard stillWanted(screen.out) else { return .skipped("its screen changed since the scan") }
+    let live = runCmux(cli, cmuxLiveTailArgs(surfaceID), password: pw)
+    guard !live.timedOut, live.status == 0 else { return .skipped("couldn't read the bottom of the pane: " + cmuxWhy(live)) }
+    guard cmuxLiveTailShows(trigger, in: live.out) else { return .skipped(trigger.missing) }
     let force: Bool
-    switch cmuxTypeDecision(state: cmuxInputState(cli: cli, password: pw, surfaceID: surfaceID), purpose: purpose) {
+    switch cmuxTypeDecision(state: cmuxInputState(cli: cli, password: pw, surfaceID: surfaceID), purpose: trigger.purpose) {
     case .skip(let why): return .skipped(why)
     case .send: force = false
     case .force: force = true
@@ -190,7 +193,7 @@ func sendToCmux(_ text: String, surfaceID: String, purpose: CmuxTypePurpose,
     guard !typed.timedOut, typed.status == 0 else { return .skipped(cmuxWhy(typed)) }
     let enter = runCmux(cli, cmuxEnterArgs(surfaceID, force: force), password: pw)
     guard !enter.timedOut, enter.status == 0 else { return .skipped("typed “\(text)” but not Enter: " + cmuxWhy(enter)) }
-    return .typed(screen: screen.out)
+    return .typed
 }
 
 /// fullyAwake and lastFullWake, written on the main thread and read by the
@@ -234,8 +237,9 @@ extension AppController {
     /// Runs on continueQueue. cmux's panes for this scan, read only while cmux
     /// is running and a password is saved; otherwise none, and the scan is
     /// Terminal's alone, as before cmux support. `read(key)` says whether this
-    /// read speaks for a pane's state: it was read, or the listing worked and
-    /// the pane is gone. A pane that lists but couldn't be read keeps its state.
+    /// read speaks for a pane's state: it was read (or its read failed outright),
+    /// or the listing worked and the pane is gone. A pane whose read timed out
+    /// or didn't fit the budget keeps its state.
     func scanCmux(_ flags: ScanFlags) -> (tabs: [ScanTab], read: (String) -> Bool) {
         let nothing: (String) -> Bool = { _ in false }
         guard let cli = flags.cmuxCLI else {
@@ -258,11 +262,16 @@ extension AppController {
             return ([], nothing)
         }
         let got = cmuxSurfacesSnapshot(cli: cli, password: pw)
-        if got.stalled {
+        // An unrecognised failure (overloaded, quitting) counts as a stall:
+        // state is kept, up to three in a row.
+        var failedWhy: String?
+        if case .failed(let why)? = got.access { failedWhy = why }
+        if got.stalled || failedWhy != nil {
             // Panes not read keep their state, but a cmux that keeps stalling
             // must not hold the Mac awake for a retry or wait it can't serve.
             cmuxScan.stalls += 1
-            noteCmux("cmux: didn't fully answer (\(got.why)), panes not read keep their state")
+            noteCmux(failedWhy.map { "cmux: not connected: \($0), its panes keep their state" }
+                     ?? "cmux: didn't fully answer (\(got.why)), panes not read keep their state")
             if cmuxScan.stalls >= 3 {
                 // A cmux that keeps stalling is unreadable until it fully answers
                 // again: no panes from it, so nothing it half-read starts over.
@@ -276,21 +285,21 @@ extension AppController {
         guard let access = got.access else { return ([], nothing) }
         let panes = got.listed.count
         DispatchQueue.main.async { [weak self] in self?.cmuxSeen.access = access; self?.cmuxSeen.panes = panes }
+        if failedWhy != nil { return ([], nothing) }
         switch access {
-        case .ok where got.stalled: break   // the stall line above says it
+        case .ok where got.stalled, .failed: break   // the stall line above says it
         case .ok:   // logged when the set of panes changes, not on every scan
             let keys = got.listed.map { cmuxKeyPrefix + $0.id }
             noteCmux("cmux: connected, \(panes) pane(s): " + keys.joined(separator: ", "), key: "ok " + keys.joined(separator: " "))
         case .badPassword: noteCmux("cmux: password not accepted, not reading it")
         case .needsPassword: noteCmux("cmux: wants a password it doesn't have (set one in cmux Settings › Automation)")
         case .denied: noteCmux("cmux: not connected (its Automation setting doesn't let Ephedrine in)")
-        case .failed(let why): noteCmux("cmux: not connected: \(why)")
         case .notInstalled: noteCmux("cmux: couldn't start its command-line tool")
         }
         guard access == .ok else { forgetCmuxTabs(); return ([], nothing) }
         let tabs: [ScanTab] = got.tabs.map { (.cmux(surfaceID: $0.0.id), cmuxKeyPrefix + $0.0.id, $0.1) }
         let listed = Set(got.listed.map { cmuxKeyPrefix + $0.id })
-        let readKeys = Set(tabs.map(\.key))
+        let readKeys = Set(tabs.map(\.key)).union(got.unreadable.map { cmuxKeyPrefix + $0 })
         if errorSkipLogged.keys.contains(where: { $0.hasPrefix(cmuxKeyPrefix) && !listed.contains($0) }) {
             errorSkipLogged = errorSkipLogged.filter { !$0.key.hasPrefix(cmuxKeyPrefix) || listed.contains($0.key) }
         }
@@ -320,9 +329,11 @@ extension AppController {
         cmuxScan.stuck.removeAll()
     }
 
-    /// After a cmux send, remember the screen it was typed against
+    /// After a cmux send, remember the scan's screen it was typed against
     /// (continueQueue). An episode that ended takes its memory with it.
-    func noteCmuxTyped(_ key: String, screen: String) { cmuxScan.textAtSend[key] = screen }
+    func noteCmuxTyped(_ key: String, screen: String) {
+        if key.hasPrefix(cmuxKeyPrefix) { cmuxScan.textAtSend[key] = screen }
+    }
 
     func endCmuxEpisodes() {
         for key in Array(cmuxScan.textAtSend.keys) + Array(cmuxScan.stuck)

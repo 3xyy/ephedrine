@@ -520,13 +520,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             if now >= st.nextTryAt && st.attempts < flags.mode.maxAttempts && cmuxScan.stuck.contains(tab.key) {
                 st.attempts = flags.mode.maxAttempts   // typing changed nothing there: done with this error (logged then)
             } else if now >= st.nextTryAt && st.attempts < flags.mode.maxAttempts {
-                let result = sendToTab("continue", tab.source, purpose: .continuePrompt, canTypeNow: canTypeNow,
-                                       stillWanted: { claudeErrorStatus($0) == .unanswered })
+                let result = sendToTab("continue", tab.source, trigger: .apiError, canTypeNow: canTypeNow)
                 if result != .notAwake {   // not awake: nothing typed or counted, it tries again next scan
                     st.attempts += 1
                     st.nextTryAt = now.addingTimeInterval(flags.mode.delay(st.attempts))
                     logLine("auto-continue #\(st.attempts) → \(tab.key)" + (result.skipReason.map { ", but nothing was typed: \($0)" } ?? ""))
-                    if case .typed(let screen?) = result { noteCmuxTyped(tab.key, screen: screen) }
+                    if result == .typed { noteCmuxTyped(tab.key, screen: tab.text) }
                     if flags.mode.maxAttempts != Int.max && st.attempts >= flags.mode.maxAttempts {
                         let n = UNMutableNotificationContent()
                         n.title = "Ephedrine"
@@ -557,14 +556,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
                 if cmuxScan.stuck.contains(key) {
                     logLine("usage limit on \(key): not picking option \(choice.number), typing there changed nothing before")
                 } else {
-                    switch sendToTab(choice.number, tab.source, purpose: .limitMenuAnswer, canTypeNow: canTypeNow,
-                                     stillWanted: { menuVisible($0) && limitMenuChoice($0) == choice }) {
+                    switch sendToTab(choice.number, tab.source, trigger: .limitMenu(choice), canTypeNow: canTypeNow) {
                     case .notAwake:
                         ep.menuHandled = false   // nothing typed; try again once properly awake
                     case .skipped(let why):
                         logLine("usage limit on \(key): option \(choice.number) not picked, nothing was typed: \(why)")
-                    case .typed(let screen):
-                        if let screen { noteCmuxTyped(key, screen: screen) }
+                    case .typed:
+                        noteCmuxTyped(key, screen: tab.text)
                         if case .claudeAutoContinue = choice { ep.claudeResumes = true }
                         logLine("usage limit on \(key): picked option \(choice.number), "
                                 + (ep.claudeResumes ? "Claude Code continues by itself at reset" : "wait for reset"))
@@ -619,14 +617,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
                 if cmuxScan.stuck.contains(key) {
                     logLine("usage limit on \(key): reset passed, not typing: typing there changed nothing before")
                 } else {
-                    switch sendToTab("continue", tab.source, purpose: .continuePrompt, canTypeNow: canTypeNow,
-                                     stillWanted: atPlainPrompt) {
+                    switch sendToTab("continue", tab.source, trigger: .limitReset, canTypeNow: canTypeNow) {
                     case .notAwake:
                         ep.resumed = false   // nothing typed; try again once properly awake
                     case .skipped(let why):
                         logLine("usage limit on \(key): reset passed, but nothing was typed: \(why)")
-                    case .typed(let screen):
-                        if let screen { noteCmuxTyped(key, screen: screen) }
+                    case .typed:
+                        noteCmuxTyped(key, screen: text)
                         logLine("usage limit on \(key): reset passed → typed continue")
                     }
                 }

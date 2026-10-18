@@ -80,25 +80,24 @@ func sendToTerminal(_ text: String, tty: String) {
 
 /// What became of one attempt to type into a tab.
 enum SendResult: Equatable {
-    case typed(screen: String?)   // cmux: the screen it was typed against (Terminal gives no answer, so nil)
-    case skipped(String)          // nothing typed, and why
-    case notAwake                 // nothing typed: the Mac isn't fully awake, or only just woke
+    case typed
+    case skipped(String)   // nothing typed, and why
+    case notAwake          // nothing typed: the Mac isn't fully awake, or only just woke
 
     var skipReason: String? { if case .skipped(let why) = self { return why }; return nil }
 }
 
 /// Type text + Return into a scanned tab. Right before typing, `canTypeNow`
 /// re-checks the wake state (the scan's own copy can be seconds old). For a
-/// cmux pane, sendToCmux also re-reads the screen for `stillWanted` and asks
-/// cmux what the live prompt holds; `purpose` says what the text is for.
-func sendToTab(_ text: String, _ source: TabSource, purpose: CmuxTypePurpose,
-               canTypeNow: () -> Bool, stillWanted: (String) -> Bool) -> SendResult {
+/// cmux pane, sendToCmux also re-reads the bottom of the pane and checks
+/// `trigger` there, then asks cmux what the live prompt holds.
+func sendToTab(_ text: String, _ source: TabSource, trigger: CmuxLiveTrigger, canTypeNow: () -> Bool) -> SendResult {
     switch source {
     case .terminal(let tty):
         guard canTypeNow() else { return .notAwake }
         sendToTerminal(text, tty: tty)
-        return .typed(screen: nil)
+        return .typed
     case .cmux(let id):
-        return sendToCmux(text, surfaceID: id, purpose: purpose, canTypeNow: canTypeNow, stillWanted: stillWanted)
+        return sendToCmux(text, surfaceID: id, trigger: trigger, canTypeNow: canTypeNow)
     }
 }
