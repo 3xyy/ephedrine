@@ -137,15 +137,31 @@ struct AwayPane: View {
                         .buttonStyle(.borderless)
                 }
             }
-            Button("Add app…") {
-                let panel = NSOpenPanel()
-                panel.allowedContentTypes = [.application]
-                panel.directoryURL = URL(fileURLWithPath: "/Applications")
-                panel.allowsMultipleSelection = true
-                guard panel.runModal() == .OK else { return }
-                for url in panel.urls { if let id = Bundle(url: url)?.bundleIdentifier { settings.addKeepRunning(id) } }
-            }
+            Button("Add app…") { chooseApps(settings.addKeepRunning) }
         }
+        Section("Always pause") {
+            if settings.alwaysPause.isEmpty { Tip("Nothing added.") }
+            ForEach(settings.alwaysPause, id: \.self) { id in
+                HStack {
+                    Text(appName(id))
+                    Spacer()
+                    Button(role: .destructive) { settings.alwaysPause.removeAll { $0 == id } } label: { Image(systemName: "minus.circle") }
+                        .buttonStyle(.borderless)
+                }
+            }
+            Button("Add app…") { chooseApps(settings.addAlwaysPause) }
+            Tip("Paused even if it's on the keep-running list. Used by I'm leaving and when the lid shuts.")
+        }
+    }
+
+    /// Pick apps in /Applications and hand each one's bundle id to `add`.
+    private func chooseApps(_ add: (String) -> Void) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls { if let id = Bundle(url: url)?.bundleIdentifier { add(id) } }
     }
 }
 

@@ -38,6 +38,8 @@ public final class AppSettings: ObservableObject {
     @Published public var menuBarIconStyle: MenuBarIconStyle { didSet { save(menuBarIconStyle.rawValue, "menuBarIconStyle") } }
     /// User additions to the apps "I'm leaving" never pauses (bundle ids).
     @Published public var awayKeepRunning: [String] { didSet { save(awayKeepRunning, "awayKeepRunning") } }
+    /// Apps "I'm leaving" and the lid pause stop even if they're on a keep-running list (bundle ids).
+    @Published public var alwaysPause: [String] { didSet { save(alwaysPause, "alwaysPause") } }
 
     public init(defaults: UserDefaults) {
         self.defaults = defaults
@@ -69,11 +71,18 @@ public final class AppSettings: ObservableObject {
         // Drop duplicates (the old `defaults write … -array-add` tip could add some), keep order.
         var seen = Set<String>()
         awayKeepRunning = (defaults.stringArray(forKey: "awayKeepRunning") ?? []).filter { seen.insert($0).inserted }
+        var seenPause = Set<String>()
+        alwaysPause = (defaults.stringArray(forKey: "alwaysPause") ?? []).filter { seenPause.insert($0).inserted }
     }
 
     public func addKeepRunning(_ bundleID: String) {
         guard !bundleID.isEmpty, !awayKeepRunning.contains(bundleID) else { return }
         awayKeepRunning.append(bundleID)
+    }
+
+    public func addAlwaysPause(_ bundleID: String) {
+        guard !bundleID.isEmpty, !alwaysPause.contains(bundleID) else { return }
+        alwaysPause.append(bundleID)
     }
 
     private func save(_ value: Any, _ key: String) {

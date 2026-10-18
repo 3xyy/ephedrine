@@ -1016,6 +1016,21 @@ private func freshDefaults() -> UserDefaults {
     #expect(s.awayKeepRunning == ["com.spotify.client"])
 }
 
+@Test func alwaysPauseDefaultsPersistsAndDedupes() {
+    let d = freshDefaults()
+    let s = AppSettings(defaults: d)
+    #expect(s.alwaysPause.isEmpty)
+    var changed: [String] = []
+    s.onChange = { changed.append($0) }
+    s.addAlwaysPause("com.tinyspeck.slackmacgap")
+    s.addAlwaysPause("com.tinyspeck.slackmacgap")
+    s.addAlwaysPause("")
+    #expect(s.alwaysPause == ["com.tinyspeck.slackmacgap"] && changed == ["alwaysPause"])
+    #expect(AppSettings(defaults: d).alwaysPause == ["com.tinyspeck.slackmacgap"])
+    d.set(["a.b", "a.b", "c.d"], forKey: "alwaysPause")
+    #expect(AppSettings(defaults: d).alwaysPause == ["a.b", "c.d"])
+}
+
 @Test func nextOccurrenceRollsToTomorrow() {
     var cal = Calendar(identifier: .gregorian)
     cal.timeZone = TimeZone(identifier: "UTC")!

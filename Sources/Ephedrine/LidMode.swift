@@ -378,7 +378,7 @@ extension AppController {
     func updateLidPause(closed: Bool) {
         if lidPaused {
             guard !closed || !settings.lidPauseApps else { return }
-            let n = suspendedPids.count
+            let n = pausedAppCount
             resumeApps(); clearAwayState(); lidPaused = false
             logLine(closed ? "lid pause turned off, resumed \(n) apps" : "lid opened, resumed \(n) apps")
             return
@@ -387,7 +387,7 @@ extension AppController {
               fm.fileExists(atPath: lidMarkerPath),   // our lid mode, not a by-hand disablesleep
               !externalDisplayActive() else { return }
         suspendApps(); persistAwayState(); lidPaused = true
-        logLine("lid shut, paused \(suspendedPids.count) apps\(pausedList)")
+        logLine("lid shut, paused \(pausedAppCount) apps\(pausedList)")
     }
 
     /// With the lid shut in lid-closed mode the Mac never sleeps, so macOS never

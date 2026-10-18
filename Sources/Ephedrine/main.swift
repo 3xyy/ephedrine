@@ -122,8 +122,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var awayMode = false
     var awayReturn: AwayReturn?
     var lastAwayReturnByInput: Date?
-    var suspendedPids: [pid_t] = []
-    var pausedNames: [String] = []
+    var pausedProcesses: [PausedProcess] = []   // what suspendApps stopped, apps before their helpers
+    var suspendedPids: [pid_t] { pausedProcesses.map(\.pid) }   // for the watchdog's paused-pids file
+    var pausedNames: [String] = []   // one per paused app
     var savedBrightness: Float = -1
     var awayTimer: Timer?
     var idleSince = Date()
@@ -658,8 +659,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         awayTimer = t
         awaySleep = AwaySleep()
         lastAwayCheck = Date()
-        logLine("away mode ON: paused \(suspendedPids.count) apps\(pausedList), turned the screen off")
-        awayNotify("Away mode on", "Paused \(suspendedPids.count) apps and turned the screen off. The Mac sleeps once Claude is done. Move the mouse or press a key when you're back.")
+        logLine("away mode ON: paused \(pausedAppCount) apps\(pausedList), turned the screen off")
+        awayNotify("Away mode on", "Paused \(pausedAppCount) apps and turned the screen off. The Mac sleeps once Claude is done. Move the mouse or press a key when you're back.")
         evaluate()
     }
 
@@ -698,64 +699,94 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     /// Code, and pausing the host app stalls its terminal and hangs Claude. Add
     /// more without rebuilding:
     ///   defaults write io.github.3xyy.ephedrine awayKeepRunning -array-add <bundle id>
+    /// Every JetBrains IDE and Zoom's and Webex's helpers are kept by prefix
+    /// (builtInKeepRunningPrefixes). Always pause wins over all of these.
     static let awayKeepRunning: Set<String> = [
         "com.apple.finder", "io.github.3xyy.ephedrine",
         // terminals
         "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "dev.warp.Warp-Stable",
-        "net.kovidgoyal.kitty", "org.alacritty", "com.github.wez.wezterm", "co.zeit.hyper",
+        "net.kovidgoyal.kitty", "org.alacritty", "com.github.wez.wezterm", "co.zeit.hyper", "org.tabby",
         // editors with built-in terminals
         "com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.todesktop.230313mzl4w4u92",   // Cursor
-        "com.exafunction.windsurf", "dev.zed.Zed",
-        // Claude app
-        "com.anthropic.claudefordesktop",
+        "com.exafunction.windsurf", "dev.zed.Zed", "com.google.antigravity", "com.google.antigravity-ide",
+        "com.sublimetext.4", "com.sublimetext.3", "com.panic.Nova",
+        // Claude app, and other apps agents run in
+        "com.anthropic.claudefordesktop", "com.openai.codex",   // ChatGPT
+        "com.conductor.app", "com.t3tools.t3code", "com.t3tools.t3code.reasoning",
         // Xcode, Simulator, iPhone Mirroring
         "com.apple.dt.Xcode", "com.apple.iphonesimulator", "com.apple.ScreenContinuity",
         // browsers
         "com.brave.Browser", "com.brave.Browser.beta", "com.brave.Browser.nightly", "com.brave.Browser.dev",
         "com.google.Chrome", "com.google.Chrome.canary", "org.chromium.Chromium", "com.apple.Safari",
         "com.microsoft.edgemac", "company.thebrowser.Browser", "org.mozilla.firefox",
+        "org.mozilla.firefoxdeveloperedition", "org.mozilla.nightly", "com.vivaldi.Vivaldi",
+        "com.operasoftware.Opera", "app.zen-browser.zen", "ai.perplexity.comet",
         // never freeze an active call/meeting
         "us.zoom.xos", "com.microsoft.teams2", "com.microsoft.teams", "com.apple.FaceTime",
         "com.cisco.webexmeetingsapp", "Cisco-Systems.Spark", "com.skype.skype",
+        "com.cisco.washost", "com.webex.meetingmanager", "com.webex.pluginagent",   // Webex helpers
         "com.tinyspeck.slackmacgap", "com.hnc.Discord",
+        // or a recording, dictation or meeting notes
+        "com.electron.wispr-flow", "com.granola.app", "com.otterai.desktop", "com.obsproject.obs-studio", "com.loom.desktop",
         // VPNs: frozen, they can cut the network Claude and Remote Control need
         "com.cloudflare.1dot1dot1dot1.macos", "com.wireguard.macos", "com.tailscale.ipn.macos",
         "io.tailscale.ipn.macsys", "com.nordvpn.macos", "com.expressvpn.ExpressVPN", "net.mullvad.vpn",
+        // services Claude's tools use: SSH agents in password managers, databases, containers, local models
+        "com.1password.1password", "com.bitwarden.desktop", "com.postgresapp.Postgres2", "dev.kdrag0n.MacVirt",   // OrbStack
+        "com.docker.docker", "com.electron.dockerdesktop", "ai.elementlabs.lmstudio", "com.electron.ollama",
     ]
 
+    /// Stop every app shouldPause picks, with its helper processes (Electron
+    /// apps do most of their work in child processes).
     func suspendApps() {
-        suspendedPids.removeAll()
+        if !pausedProcesses.isEmpty { resumeApps() }   // never lose track of processes still stopped
         pausedNames.removeAll()
-        let allow = Self.awayKeepRunning.union(settings.awayKeepRunning)
-        let browserWords = ["chrome", "chromium", "brave", "safari", "edge", "arc", "firefox", "playwright"]
-        for app in NSWorkspace.shared.runningApplications {
-            guard app.activationPolicy == .regular,
-                  app.processIdentifier > 1, app.processIdentifier != getpid() else { continue }
-            if allow.contains(app.bundleIdentifier ?? "") { continue }
-            let name = (app.localizedName ?? "").lowercased()
-            if browserWords.contains(where: { name.contains($0) }) { continue }
-            kill(app.processIdentifier, SIGSTOP)
-            suspendedPids.append(app.processIdentifier)
-            pausedNames.append(app.localizedName ?? app.bundleIdentifier ?? "pid \(app.processIdentifier)")
+        let apps = NSWorkspace.shared.runningApplications.map {
+            RunningAppInfo(pid: $0.processIdentifier, bundleID: $0.bundleIdentifier,
+                           name: $0.localizedName ?? "", regular: $0.activationPolicy == .regular)
         }
+        let procs = processSnapshot()
+        if procs.isEmpty { logLine("couldn't read the process list, paused nothing"); return }
+        let plan = pausePlan(apps: apps, procs: procs, keepRunning: Self.awayKeepRunning.union(settings.awayKeepRunning),
+                             alwaysPause: Set(settings.alwaysPause), selfPID: getpid())
+        pausedProcesses = plan.processes.map { PausedProcess(pid: $0.pid, start: $0.start) }
+        // Written down (and the watchdog started) before the first stop, so a
+        // crash partway through still leaves every stopped pid in paused-pids.
+        persistAwayState()
+        var failed = Set<pid_t>()
+        for p in pausedProcesses.reversed() {   // helpers first, apps last
+            if kill(p.pid, SIGSTOP) != 0 { failed.insert(p.pid) }
+        }
+        pausedProcesses.removeAll { failed.contains($0.pid) }   // gone already, or not ours
+        pausedNames = plan.apps.filter { !failed.contains($0.pid) }
+            .map { $0.name.isEmpty ? ($0.bundleID ?? "pid \($0.pid)") : $0.name }
     }
     /// Names of what suspendApps last paused (for the log).
     var pausedList: String { pausedNames.isEmpty ? "" : " (" + pausedNames.joined(separator: ", ") + ")" }
+    /// Paused apps, not processes: what the menu, the log and notifications count.
+    var pausedAppCount: Int { pausedNames.count }
 
+    /// SIGCONT what suspendApps stopped, apps before their helpers, skipping
+    /// any that exited (its pid may belong to something else now).
     func resumeApps() {
-        for pid in suspendedPids { kill(pid, SIGCONT) }
-        logLine("resumed \(suspendedPids.count) apps")
-        suspendedPids.removeAll()
+        let procs = pausedProcesses.isEmpty ? [] : processSnapshot()
+        if procs.isEmpty && !pausedProcesses.isEmpty { logLine("couldn't read the process list, resuming every paused pid") }
+        let live = toResume(pausedProcesses, in: procs)
+        for p in live { kill(p.pid, SIGCONT) }
+        let skipped = pausedProcesses.count - live.count
+        logLine("resumed \(pausedAppCount) apps (\(live.count) processes" + (skipped > 0 ? ", skipped \(skipped) that exited" : "") + ")")
+        pausedProcesses.removeAll()
+        pausedNames.removeAll()
     }
 
     // ── Away crash-recovery: if we die while apps are SIGSTOPped / screen is
-    // dimmed, the state file lets the next launch undo it. SIGCONT to a pid
-    // that isn't stopped (or was reused) is harmless.
+    // dimmed, the state file lets the next launch undo it. Each process is
+    // recorded with its start time, so a pid reused since then is left alone.
 
     func persistAwayState() {
-        let obj: [String: Any] = ["pids": suspendedPids.map(Int.init), "brightness": Double(savedBrightness)]
-        if let d = try? JSONSerialization.data(withJSONObject: obj) {
-            try? d.write(to: URL(fileURLWithPath: awayStatePath))
+        let state = AwayState(processes: pausedProcesses, pids: suspendedPids, brightness: Double(savedBrightness))
+        if let d = try? JSONEncoder().encode(state) {
+            try? d.write(to: URL(fileURLWithPath: awayStatePath), options: .atomic)
         }
         try? suspendedPids.map(String.init).joined(separator: " ").write(toFile: pausedPidsPath, atomically: true, encoding: .utf8)
         updateWatchdog()   // un-pauses them if Ephedrine dies, not only in lid mode
@@ -766,15 +797,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     }
     func recoverFromInterruptedAway() {
         guard let d = fm.contents(atPath: awayStatePath),
-              let obj = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return }
-        let pids = (obj["pids"] as? [Int]) ?? []
-        for pid in pids { kill(pid_t(pid), SIGCONT) }
-        if let b = obj["brightness"] as? Double, b >= 0 {
+              let state = try? JSONDecoder().decode(AwayState.self, from: d) else { return }
+        let pids = state.pidsToResume(in: processSnapshot())   // a file from an older version: all its pids
+        for pid in pids { kill(pid, SIGCONT) }
+        if let b = state.brightness, b >= 0 {
             savedBrightness = Float(b)
             restoreBrightness()
         }
         clearAwayState()
-        if !pids.isEmpty { logLine("recovered from an interrupted away mode, resumed \(pids.count) apps") }
+        if !pids.isEmpty { logLine("recovered from an interrupted away mode, resumed \(pids.count) processes") }
     }
 
     typealias BrightSet = @convention(c) (UInt32, Float) -> Int32
@@ -931,8 +962,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     // MARK: menu
 
     func statusText() -> String {
-        if awayMode { return "Away: \(suspendedPids.count) apps paused, screen off" }
-        if lidPaused { return "Lid shut: \(suspendedPids.count) apps paused" }
+        if awayMode { return "Away: \(pausedAppCount) apps paused, screen off" }
+        if lidPaused { return "Lid shut: \(pausedAppCount) apps paused" }
         if batteryStop.stopped {
             return awakeBatteryFloor(settings.batteryFloor) >= lidOnlyPluggedIn
                 ? "On battery: Ephedrine keeps the Mac awake only on the charger"
@@ -977,7 +1008,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
     /// What Ephedrine is holding back; later tasks fill in the rest.
     var heldState: (paused: Int, dockerPaused: Bool, muted: Bool, lowPower: Bool, lastGap: TimeInterval?) {
-        (suspendedPids.count, false, false, false, nil)
+        (pausedAppCount, false, false, false, nil)
     }
 
     /// Plain warning lines for the status card (no "⚠"; the card draws the triangle).
