@@ -205,6 +205,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         // covers a crash till then.
         if !lidIsClosed() || externalDisplayActive() { restoreLidExtras() }
         updateWatchdog()
+        if settings.appNapOffForAgents { applyAppNapOverride() } else { restoreAppNapOverride() }   // the restore finishes one a crash cut short
         // `pkill`/`kill` (build.sh, logout scripts) → a normal quit, so
         // applicationWillTerminate un-pauses apps and releases lid-closed mode.
         signal(SIGTERM, SIG_IGN)
@@ -1481,6 +1482,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         case "browserThrottleWarning":
             if settings.browserThrottleWarning { scanBrowsers() } else { clearBrowserState() }
             logLine("browser throttle warning \(settings.browserThrottleWarning ? "on" : "off")")
+        case "appNapOffForAgents":
+            if settings.appNapOffForAgents { applyAppNapOverride() } else { restoreAppNapOverride() }
         case "lidRemoteCheckIn":
             updateCheckInActivity()
             logLine("Remote Control check-ins \(settings.lidRemoteCheckIn ? "on" : "off")")

@@ -164,6 +164,15 @@ struct GeneralPane: View {
                 ui.loginChanged += 1
             }))
         }
+        Section {
+            Toggle(isOn: $settings.appNapOffForAgents) {
+                Text("Never let App Nap slow down terminals, editors and Claude")
+                Tip("Writes NSAppSleepDisabled into those apps' settings and puts the old value back when you turn this off. Each app picks it up the next time it opens.")
+            }
+            if settings.appNapOffForAgents, !appNapInstalledNames.isEmpty {
+                Tip("Applies to: " + appNapInstalledNames.joined(separator: ", ") + ".")
+            }
+        }
         Section("Menu bar icon") {
             Picker("Colors", selection: $settings.menuBarIconStyle) {
                 ForEach(MenuBarIconStyle.allCases, id: \.self) { Text($0.label).tag($0) }

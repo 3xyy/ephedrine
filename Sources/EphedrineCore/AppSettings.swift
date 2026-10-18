@@ -43,6 +43,8 @@ public final class AppSettings: ObservableObject {
     @Published public var lidDockerRule: Bool { didSet { save(lidDockerRule, "lidDockerRule") } }
     /// Warn in the menu when a running Chromium browser would slow down hidden windows with the lid shut.
     @Published public var browserThrottleWarning: Bool { didSet { save(browserThrottleWarning, "browserThrottleWarning") } }
+    /// Write NSAppSleepDisabled into the preferences of terminals, editors, Claude and Chromium browsers; turning it off puts the old values back.
+    @Published public var appNapOffForAgents: Bool { didSet { save(appNapOffForAgents, "appNapOffForAgents") } }
     /// Ask GitHub every few hours whether a newer version is out.
     @Published public var checkForUpdates: Bool { didSet { save(checkForUpdates, "checkForUpdates") } }
     /// The first-run setup screen was finished (or skipped).
@@ -89,6 +91,7 @@ public final class AppSettings: ObservableObject {
         lidKeyboardOff = bool("lidKeyboardOff", true)
         lidDockerRule = bool("lidDockerRule", false)
         browserThrottleWarning = bool("browserThrottleWarning", true)
+        appNapOffForAgents = bool("appNapOffForAgents", false)
         checkForUpdates = bool("checkForUpdates", true)
         setupDone = bool("setupDone", false)
         menuBarIconStyle = defaults.string(forKey: "menuBarIconStyle").flatMap(MenuBarIconStyle.init(rawValue:)) ?? .mono
