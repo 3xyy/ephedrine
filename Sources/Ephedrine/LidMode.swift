@@ -538,8 +538,9 @@ extension AppController {
         let found = lowPowerCause(holding: holding, lidHold: lidShutHold(closed: lidIsClosed()),
                                   onLidShut: settings.lowPowerOnLidShut, onBattery: !onACPower(), percent: percent,
                                   floor: settings.lowPowerFloor, thermal: ProcessInfo.processInfo.thermalState)
-        // Held 5 min while ours, and while the owner has taken over (so a heat
-        // cause that flickers doesn't end the takeover early).
+        // Heat and battery are held 5 min while ours, and while the owner has
+        // taken over (so a heat cause that flickers doesn't end the takeover
+        // early). The lid isn't: opening it ends Low Power Mode at once.
         let cause = lowPowerHold.step(cause: found, ours: ours || lowPowerOwnership.ownerTookOver, now: now)
         lowPowerOwnership.noteCause(cause)
         guard !lidApplying else { return }        // a lid flip or a setup removal is running

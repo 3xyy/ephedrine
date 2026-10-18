@@ -146,3 +146,15 @@ import Testing
     #expect(lowPowerRecheckDelay(failures: 3) == 900)
     #expect(lowPowerRecheckDelay(failures: 9) == 900)
 }
+
+// R33: opening the lid means the owner is back, so the lid cause isn't held;
+// heat (and battery) still are.
+@Test func lowPowerHoldSkipsTheLid() {
+    var h = LowPowerHold()
+    let t0 = Date(timeIntervalSince1970: 1000)
+    func step(_ c: LowPowerCause?, _ t: TimeInterval) -> LowPowerCause? { h.step(cause: c, ours: true, now: t0 + t) }
+    #expect(step(.lid, 0) == .lid)
+    #expect(step(nil, 3) == nil)
+    #expect(step(.heat, 6) == .heat)
+    #expect(step(nil, 66) == .heat)
+}

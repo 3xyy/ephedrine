@@ -83,9 +83,11 @@ public struct BatterySettle {
 }
 
 /// Low Power Mode cools the Mac and so removes its own heat cause; a Mac near
-/// serious would switch it on, off, on. While it's ours, a cause that held is
-/// still reported until `linger` after it last held. Causes are remembered even
-/// before it's ours, so the one that switched it on counts from that tick.
+/// serious would switch it on, off, on. While it's ours, a heat or battery
+/// cause that held is still reported until `linger` after it last held. Not
+/// the lid: opening it means the owner is back, so that ends at once. Causes
+/// are remembered even before it's ours, so the one that switched it on counts
+/// from that tick.
 public struct LowPowerHold {
     public static let linger: TimeInterval = 300
     private var last: LowPowerCause?
@@ -94,7 +96,7 @@ public struct LowPowerHold {
 
     public mutating func step(cause: LowPowerCause?, ours: Bool, now: Date) -> LowPowerCause? {
         if let c = cause { last = c; lastAt = now; return c }
-        guard ours, let held = last, now.timeIntervalSince(lastAt) < Self.linger else { last = nil; return nil }
+        guard ours, let held = last, held != .lid, now.timeIntervalSince(lastAt) < Self.linger else { last = nil; return nil }
         return held
     }
 }
