@@ -709,9 +709,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         // editors with built-in terminals
         "com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.todesktop.230313mzl4w4u92",   // Cursor
         "com.exafunction.windsurf", "dev.zed.Zed", "com.google.antigravity", "com.google.antigravity-ide",
-        "com.sublimetext.4", "com.sublimetext.3", "com.panic.Nova",
+        "com.sublimetext.4", "com.sublimetext.3", "com.panic.Nova", "com.vscodium", "com.google.android.studio",
         // Claude app, and other apps agents run in
-        "com.anthropic.claudefordesktop", "com.openai.codex",   // ChatGPT
+        "com.anthropic.claudefordesktop", "com.openai.chat", "com.openai.codex",   // ChatGPT, Codex
         "com.conductor.app", "com.t3tools.t3code", "com.t3tools.t3code.reasoning",
         // Xcode, Simulator, iPhone Mirroring
         "com.apple.dt.Xcode", "com.apple.iphonesimulator", "com.apple.ScreenContinuity",
@@ -747,19 +747,29 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         }
         let procs = processSnapshot()
         if procs.isEmpty { logLine("couldn't read the process list, paused nothing"); return }
+        // Claude Code under an app no list names (Rio, Wave, Emacs…) keeps that app running.
+        let ps = runTool("/bin/ps", ["-axo", "pid=,args="])
+        if ps.isEmpty { logLine("couldn't run ps, so an app Claude Code runs under may get paused") }
         let plan = pausePlan(apps: apps, procs: procs, keepRunning: Self.awayKeepRunning.union(settings.awayKeepRunning),
-                             alwaysPause: Set(settings.alwaysPause), selfPID: getpid())
+                             alwaysPause: Set(settings.alwaysPause), selfPID: getpid(),
+                             claudePIDs: claudePids(psLines: ps.split(separator: "\n").map(String.init)))
+        for name in plan.keptForClaude { logLine("kept \(name) running: Claude Code runs under it") }
         pausedProcesses = plan.processes.map { PausedProcess(pid: $0.pid, start: $0.start) }
         // Written down (and the watchdog started) before the first stop, so a
         // crash partway through still leaves every stopped pid in paused-pids.
-        persistAwayState()
+        guard persistAwayState() else { pausedProcesses.removeAll(); logLine("couldn't record what to pause, paused nothing"); return }
+        // Only what's still the same process: a pid that exited since the
+        // snapshot (ps ran in between) may belong to something else now.
+        let now = processSnapshot()
+        if now.isEmpty { pausedProcesses.removeAll(); logLine("couldn't read the process list, paused nothing"); return }
+        pausedProcesses = pausedProcesses.filter { stillSame($0, in: now) }
         var failed = Set<pid_t>()
         for p in pausedProcesses.reversed() {   // helpers first, apps last
             if kill(p.pid, SIGSTOP) != 0 { failed.insert(p.pid) }
         }
         pausedProcesses.removeAll { failed.contains($0.pid) }   // gone already, or not ours
-        pausedNames = plan.apps.filter { !failed.contains($0.pid) }
-            .map { $0.name.isEmpty ? ($0.bundleID ?? "pid \($0.pid)") : $0.name }
+        let stopped = Set(pausedProcesses.map(\.pid))
+        pausedNames = plan.apps.filter { stopped.contains($0.pid) }.map(\.displayName)
     }
     /// Names of what suspendApps last paused (for the log).
     var pausedList: String { pausedNames.isEmpty ? "" : " (" + pausedNames.joined(separator: ", ") + ")" }
@@ -783,13 +793,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     // dimmed, the state file lets the next launch undo it. Each process is
     // recorded with its start time, so a pid reused since then is left alone.
 
-    func persistAwayState() {
+    /// False if paused-pids couldn't be written: then the watchdog can't
+    /// un-pause anything after a crash, so suspendApps stops nothing.
+    @discardableResult
+    func persistAwayState() -> Bool {
         let state = AwayState(processes: pausedProcesses, pids: suspendedPids, brightness: Double(savedBrightness))
         if let d = try? JSONEncoder().encode(state) {
             try? d.write(to: URL(fileURLWithPath: awayStatePath), options: .atomic)
         }
-        try? suspendedPids.map(String.init).joined(separator: " ").write(toFile: pausedPidsPath, atomically: true, encoding: .utf8)
+        var ok = true
+        do {
+            try suspendedPids.map(String.init).joined(separator: " ").write(toFile: pausedPidsPath, atomically: true, encoding: .utf8)
+        } catch {
+            logLine("couldn't write \(pausedPidsPath): \(error.localizedDescription)")
+            ok = false
+        }
         updateWatchdog()   // un-pauses them if Ephedrine dies, not only in lid mode
+        return ok
     }
     func clearAwayState() {
         try? fm.removeItem(atPath: awayStatePath); try? fm.removeItem(atPath: pausedPidsPath)

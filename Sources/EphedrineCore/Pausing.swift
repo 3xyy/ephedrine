@@ -14,6 +14,8 @@ public struct RunningAppInfo {
     public init(pid: Int32, bundleID: String?, name: String, regular: Bool) {
         self.pid = pid; self.bundleID = bundleID; self.name = name; self.regular = regular
     }
+    /// The name for logs and the menu: its name, else its bundle id, else its pid.
+    public var displayName: String { name.isEmpty ? (bundleID ?? "pid \(pid)") : name }
 }
 
 /// One row of the kernel's process table. `start` is the start time in
@@ -76,15 +78,31 @@ public func descendants(of roots: [Int32], in procs: [ProcEntry]) -> [ProcEntry]
     return out
 }
 
+/// Pids whose command line mentions Claude, from `ps -axo pid=,args=` lines
+/// (the same test interactiveShellRunningCommand uses). A stray match only
+/// means less pausing.
+public func claudePids(psLines: [String]) -> Set<Int32> {
+    var out = Set<Int32>()
+    for line in psLines {
+        let parts = line.trimmingCharacters(in: .whitespaces).split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+        guard parts.count == 2, let pid = Int32(parts[0]) else { continue }
+        if parts[1].lowercased().contains("claude") { out.insert(pid) }
+    }
+    return out
+}
+
 /// What one pause stops: the apps `shouldPause` picks, and each one's process
 /// tree, apps first (stop it in reverse, resume it in order). The walk down
 /// stops at Ephedrine (its watchdog is its child) and at a regular app that's
 /// kept running, even if a paused app started it. Helper apps aren't regular
 /// (Electron's helpers are menu-bar apps), so they're paused with their app,
 /// even one the keep-running rules name when its app is on Always pause.
+/// An app with Claude Code anywhere in its tree (`claudePIDs`) isn't paused at
+/// all, Always pause or not: its name goes in `keptForClaude`.
 /// Empty when `procs` is: no snapshot, no start times, nothing we could safely resume.
 public func pausePlan(apps: [RunningAppInfo], procs: [ProcEntry], keepRunning: Set<String>,
-                      alwaysPause: Set<String>, selfPID: Int32) -> (apps: [RunningAppInfo], processes: [ProcEntry]) {
+                      alwaysPause: Set<String>, selfPID: Int32, claudePIDs: Set<Int32>)
+    -> (apps: [RunningAppInfo], processes: [ProcEntry], keptForClaude: [String]) {
     var chosen: [RunningAppInfo] = []
     var spared: Set<Int32> = [selfPID]
     for app in apps {
@@ -94,9 +112,13 @@ public func pausePlan(apps: [RunningAppInfo], procs: [ProcEntry], keepRunning: S
             spared.insert(app.pid)
         }
     }
-    let tree = descendants(of: chosen.map(\.pid), in: procs.filter { $0.pid > 1 && !spared.contains($0.pid) })
+    let walkable = procs.filter { $0.pid > 1 && !spared.contains($0.pid) }
+    let hosts = chosen.filter { app in descendants(of: [app.pid], in: walkable).contains { claudePIDs.contains($0.pid) } }
+    let hostPIDs = Set(hosts.map(\.pid))
+    chosen.removeAll { hostPIDs.contains($0.pid) }
+    let tree = descendants(of: chosen.map(\.pid), in: walkable)   // no host is below a chosen app: that app would be a host too
     let inTree = Set(tree.map(\.pid))
-    return (chosen.filter { inTree.contains($0.pid) }, tree)
+    return (chosen.filter { inTree.contains($0.pid) }, tree, hosts.map(\.displayName))
 }
 
 /// True if the paused process is still running as itself (same pid, same start).

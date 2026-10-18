@@ -101,13 +101,13 @@ import Foundation
                  ProcEntry(pid: 9, ppid: 100, start: 4), ProcEntry(pid: 10, ppid: 9, start: 5),
                  ProcEntry(pid: 200, ppid: 100, start: 6), ProcEntry(pid: 201, ppid: 200, start: 7),
                  ProcEntry(pid: 220, ppid: 100, start: 10), ProcEntry(pid: 221, ppid: 220, start: 11)]
-    let plan = pausePlan(apps: apps, procs: procs, keepRunning: ["com.apple.Terminal"], alwaysPause: [], selfPID: 9)
+    let plan = pausePlan(apps: apps, procs: procs, keepRunning: ["com.apple.Terminal"], alwaysPause: [], selfPID: 9, claudePIDs: [])
     #expect(plan.apps.map(\.pid) == [100])   // Gone exited before the snapshot
     #expect(plan.processes == [ProcEntry(pid: 100, ppid: 1, start: 1), ProcEntry(pid: 101, ppid: 100, start: 2),
                                ProcEntry(pid: 102, ppid: 101, start: 3)])
-    #expect(pausePlan(apps: apps, procs: [], keepRunning: [], alwaysPause: [], selfPID: 9).processes.isEmpty)
+    #expect(pausePlan(apps: apps, procs: [], keepRunning: [], alwaysPause: [], selfPID: 9, claudePIDs: []).processes.isEmpty)
     let garbled = [ProcEntry(pid: 100, ppid: 1, start: 1), ProcEntry(pid: 1, ppid: 100, start: 0)]   // never launchd
-    #expect(pausePlan(apps: apps, procs: garbled, keepRunning: [], alwaysPause: [], selfPID: 9).processes.map(\.pid) == [100])
+    #expect(pausePlan(apps: apps, procs: garbled, keepRunning: [], alwaysPause: [], selfPID: 9, claudePIDs: []).processes.map(\.pid) == [100])
 }
 
 // Always pause takes the app's helper apps too, even ones the keep-running
@@ -117,6 +117,35 @@ import Foundation
                 RunningAppInfo(pid: 401, bundleID: "us.zoom.CptHost", name: "CptHost", regular: false)]
     let procs = [ProcEntry(pid: 400, ppid: 1, start: 1), ProcEntry(pid: 401, ppid: 400, start: 2)]
     let keep: Set<String> = ["us.zoom.xos"]
-    #expect(pausePlan(apps: apps, procs: procs, keepRunning: keep, alwaysPause: [], selfPID: 9).processes.isEmpty)
-    #expect(pausePlan(apps: apps, procs: procs, keepRunning: keep, alwaysPause: ["us.zoom.xos"], selfPID: 9).processes.map(\.pid) == [400, 401])
+    #expect(pausePlan(apps: apps, procs: procs, keepRunning: keep, alwaysPause: [], selfPID: 9, claudePIDs: []).processes.isEmpty)
+    #expect(pausePlan(apps: apps, procs: procs, keepRunning: keep, alwaysPause: ["us.zoom.xos"], selfPID: 9, claudePIDs: []).processes.map(\.pid) == [400, 401])
+}
+
+// Claude Code under a host app no list names (Rio, Wave, Emacs…): the app
+// and its whole tree keep running, or "I'm leaving" would stop the very work
+// it keeps the Mac awake for. Even when the app is on Always pause.
+@Test func pausePlanKeepsClaudeHosts() {
+    let apps = [RunningAppInfo(pid: 500, bundleID: "com.example.editor", name: "Editor", regular: true),
+                RunningAppInfo(pid: 600, bundleID: "com.apple.Notes", name: "Notes", regular: true)]
+    let procs = [ProcEntry(pid: 500, ppid: 1, start: 1), ProcEntry(pid: 501, ppid: 500, start: 2),   // the editor's shell
+                 ProcEntry(pid: 502, ppid: 501, start: 3), ProcEntry(pid: 503, ppid: 502, start: 4),  // claude, and a tool it runs
+                 ProcEntry(pid: 510, ppid: 500, start: 5),                                            // another helper
+                 ProcEntry(pid: 600, ppid: 1, start: 6), ProcEntry(pid: 601, ppid: 600, start: 7)]
+    let plan = pausePlan(apps: apps, procs: procs, keepRunning: [], alwaysPause: [], selfPID: 9, claudePIDs: [502])
+    #expect(plan.keptForClaude == ["Editor"])
+    #expect(plan.apps.map(\.pid) == [600])
+    #expect(plan.processes.map(\.pid) == [600, 601])
+    let always = pausePlan(apps: apps, procs: procs, keepRunning: [], alwaysPause: ["com.example.editor"], selfPID: 9, claudePIDs: [502])
+    #expect(always.keptForClaude == ["Editor"] && always.processes.map(\.pid) == [600, 601])
+    // No Claude under it: the editor is paused with its tree.
+    let none = pausePlan(apps: apps, procs: procs, keepRunning: [], alwaysPause: [], selfPID: 9, claudePIDs: [])
+    #expect(none.keptForClaude.isEmpty && none.apps.map(\.pid) == [500, 600])
+    #expect(Set(none.processes.map(\.pid)) == [500, 501, 502, 503, 510, 600, 601])
+}
+
+@Test func claudePidsFromPs() {
+    let lines = ["  123 /Users/x/.local/share/claude/versions/2.1.3 --resume",
+                 " 456 node /opt/homebrew/bin/claude", "789 -zsh", "  1011 zsh", "", "   ", "garbage",
+                 "abc /bin/claude", "  42", "77 /Applications/Claude.app/Contents/MacOS/Claude"]
+    #expect(claudePids(psLines: lines) == [123, 456, 77])
 }
