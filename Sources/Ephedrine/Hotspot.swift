@@ -67,11 +67,13 @@ extension AppController {
         if up { hotspotNotified = false; hotspotNoted = false; hotspotNotedOff = false }
         guard !hotspotJoining else { return }
         let ssid = hotspotName
-        // The radio is only asked while Wi-Fi is down. Switched off on purpose: not eligible, and never turned on here.
-        let radioOn = up || CWWiFiClient.shared().interface()?.powerOn() ?? false
+        // The radio is only asked while Wi-Fi is down, a hotspot is saved and something is held (the gate
+        // resets without those whatever it says). Switched off on purpose: not eligible, and never turned on here.
+        let ask = !up && !ssid.isEmpty && holding
+        let radioOn = !ask || CWWiFiClient.shared().interface()?.powerOn() ?? false
         let quiet = Date().timeIntervalSince(lastFullWake) > postWakeQuiet
-        if !up && radioOn { hotspotNotedOff = false }
-        if !up && !radioOn && !hotspotNotedOff && holding && fullyAwake && !ssid.isEmpty {
+        if ask && radioOn { hotspotNotedOff = false }
+        if ask && !radioOn && !hotspotNotedOff && fullyAwake {
             hotspotNotedOff = true
             logLine("hotspot: Wi-Fi is switched off, not joining")
         }

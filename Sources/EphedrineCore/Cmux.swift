@@ -141,6 +141,45 @@ public func cmuxLiveTailShows(_ trigger: CmuxLiveTrigger, in tail: String) -> Bo
     }
 }
 
+/// Whether a pane's live tail (cmuxLiveTailArgs) shows Claude working at its
+/// bottom. Trailing blank rows (under the cursor of a screen that isn't full)
+/// are dropped first, or the bottom would always look idle.
+public func cmuxLiveTailWorking(_ tail: String) -> Bool {
+    var lines = tail.split(separator: "\n", omittingEmptySubsequences: false)
+    while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
+    return claudeWorkingVisible(lines.joined(separator: "\n"))
+}
+
+/// cmux's scan reads the part of a pane the owner may have scrolled to, so
+/// Claude working there could be old text. When cmux panes are the only sign
+/// of Claude working, a pane counts only once a read of its live tail shows it
+/// too. Each pane's answer is kept a minute, so that read happens at
+/// most once a minute per pane. continueQueue only.
+public struct CmuxWorkingCheck {
+    public static let every: TimeInterval = 60
+    private var answers: [String: (at: Date, working: Bool)] = [:]
+    public init() {}
+
+    /// Whether any of `candidates` (pane keys whose scan shows Claude working)
+    /// is working at its live tail. `readTail` reads one pane's live tail and
+    /// says whether it shows Claude working, nil when there's no answer. No
+    /// answer counts as not working for the minute, and the panes after it
+    /// wait for the next scan, so a stalled cmux can't hold up the scan.
+    public mutating func anyWorking(_ candidates: [String], now: Date, readTail: (String) -> Bool?) -> Bool {
+        answers = answers.filter { now.timeIntervalSince($0.value.at) < Self.every }
+        if candidates.contains(where: { answers[$0]?.working == true }) { return true }
+        for key in candidates where answers[key] == nil {
+            let working = readTail(key)
+            answers[key] = (now, working ?? false)
+            if working == true { return true }
+            if working == nil { break }
+        }
+        return false
+    }
+
+    public mutating func forget() { answers.removeAll() }
+}
+
 /// The last word before typing into a cmux pane, from its live input state
 /// read right before. "continue" goes only into an empty Claude Code prompt,
 /// with cmux's own draft and dialog guard still on. A menu answer is forced

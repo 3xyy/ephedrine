@@ -66,3 +66,14 @@ public func shouldNudge(gap: TimeInterval, threshold: TimeInterval, targets: [St
     guard let since = downSince else { return false }
     return gap >= threshold && !targets.isEmpty && awake && since > lastSleep
 }
+
+/// Why shouldNudge said no, for the log: nil when it says yes, and nil for the
+/// quiet cases (a gap under the threshold, no panes listed), which happen on
+/// every blip and would only fill the log.
+public func nudgeSkipReason(gap: TimeInterval, threshold: TimeInterval, targets: [String], awake: Bool,
+                            downSince: Date?, lastSleep: Date) -> String? {
+    guard let since = downSince, gap >= threshold, !targets.isEmpty else { return nil }
+    if !awake { return "the Mac isn't fully awake" }
+    if since <= lastSleep { return "the outage began before the Mac last went to sleep" }
+    return nil
+}

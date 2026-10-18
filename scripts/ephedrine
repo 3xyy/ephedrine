@@ -109,6 +109,15 @@ cmd_uninstall() {
     if [ -x "$APP/Contents/MacOS/Ephedrine" ]; then
         quit_app
         "$APP/Contents/MacOS/Ephedrine" --unregister-login-item 2>/dev/null || true
+        # Quitting leaves the App Nap setting it wrote for other apps; put the old values back.
+        if [ -f "$DATA/app-nap.json" ]; then
+            "$APP/Contents/MacOS/Ephedrine" --restore-app-nap 2>/dev/null || true
+            if [ -f "$DATA/app-nap.json" ]; then
+                echo "  Couldn't put back every App Nap setting it changed. What's left is listed in $DATA/app-nap.json"
+            else
+                echo "✓ Put back the App Nap settings it changed"
+            fi
+        fi
     fi
     rm -rf "$APP"
     echo "✓ Removed $APP"
@@ -123,6 +132,9 @@ cmd_uninstall() {
         sudo -n /usr/bin/pmset -b lowpowermode 0 2>/dev/null && rm -f "$DATA/low-power-on"
     fi
     echo "  Kept the log ($DATA) and settings (defaults delete $BUNDLE_ID removes them)."
+    echo "  A cmux or hotspot password you saved stays in your login keychain. To remove it:"
+    echo "    security delete-generic-password -s ephedrine-cmux"
+    echo "    security delete-generic-password -s ephedrine-hotspot"
     if [ -f "$SUDOERS" ]; then
         echo
         echo "Lid-closed mode was set up. Remove its sudo rule with:"

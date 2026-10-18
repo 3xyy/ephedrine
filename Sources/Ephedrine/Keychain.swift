@@ -71,10 +71,17 @@ enum Keychain {
         return attempt()
     }
 
-    /// Remove the item; already gone counts as done. Main thread only, like save.
+    /// Remove the item; already gone counts as done. Main thread only, like save,
+    /// and retried once the same way when a read had interaction switched off.
     static func delete(service: String, account: String) -> OSStatus {
         dispatchPrecondition(condition: .onQueue(.main))
-        let s = SecItemDelete(item(service, account) as CFDictionary)
-        return s == errSecItemNotFound ? errSecSuccess : s
+        func attempt() -> OSStatus {
+            let s = SecItemDelete(item(service, account) as CFDictionary)
+            return s == errSecItemNotFound ? errSecSuccess : s
+        }
+        let s = attempt()
+        guard s == errSecInteractionNotAllowed else { return s }
+        interactionLock.lock(); interactionLock.unlock()
+        return attempt()
     }
 }

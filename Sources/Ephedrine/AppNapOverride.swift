@@ -80,24 +80,26 @@ extension AppController {
         for id in ids where !appNapWrite(id, true) { logLine("App Nap: couldn't write \(id)'s settings") }
         logLine("App Nap off for \(ids.count) apps: \(ids.joined(separator: ", "))")
     }
+}
 
-    /// Put every saved value back. An entry stays in the file until its restore synchronized.
-    func restoreAppNapOverride() {
-        guard case .journal(var journal) = readAppNapJournal() else { return }
-        var restored: [String] = []
-        for id in journal.unrestorable {   // never written to; just forgotten
-            logLine("App Nap: dropping \(id) from the journal, not a bundle id")
-            journal.prior[id] = nil
-        }
-        for (id, prior) in journal.restorePlan() {
-            let value: Bool?
-            switch prior { case .absent: value = nil; case .value(let b): value = b }
-            if appNapWrite(id, value) { journal.prior[id] = nil; restored.append(id) }
-            else { logLine("App Nap: couldn't put \(id)'s setting back, keeping it to try again") }
-        }
-        if !saveAppNapJournal(journal) { logLine("App Nap: couldn't update \(appNapJournalPath) after restoring") }
-        if !restored.isEmpty { logLine("App Nap setting put back for \(restored.count) apps") }
+/// Put every saved value back. An entry stays in the file until its restore
+/// synchronized. Not tied to the controller: `ephedrine uninstall` runs it
+/// through the `--restore-app-nap` launch flag, with no app running.
+func restoreAppNapOverride() {
+    guard case .journal(var journal) = readAppNapJournal() else { return }
+    var restored: [String] = []
+    for id in journal.unrestorable {   // never written to; just forgotten
+        logLine("App Nap: dropping \(id) from the journal, not a bundle id")
+        journal.prior[id] = nil
     }
+    for (id, prior) in journal.restorePlan() {
+        let value: Bool?
+        switch prior { case .absent: value = nil; case .value(let b): value = b }
+        if appNapWrite(id, value) { journal.prior[id] = nil; restored.append(id) }
+        else { logLine("App Nap: couldn't put \(id)'s setting back, keeping it to try again") }
+    }
+    if !saveAppNapJournal(journal) { logLine("App Nap: couldn't update \(appNapJournalPath) after restoring") }
+    if !restored.isEmpty { logLine("App Nap setting put back for \(restored.count) apps") }
 }
 
 /// Names of the listed apps that are installed, for the Settings list. Looked up once.

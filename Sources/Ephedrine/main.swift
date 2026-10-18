@@ -269,8 +269,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         if awayMode || lidPaused || !pausedProcesses.isEmpty { resumeApps(); restoreBrightness() }   // never leave apps (or Docker) frozen
         clearAwayState()
         restoreLidExtras(endingHold: true)   // and disarm the watchdog's unmute: a waiting device isn't its business
+        releaseLowPower("quitting")          // before the lid: with it shut, the Mac can sleep the moment sleep is allowed
         releaseLidOnQuit()
-        releaseLowPower("quitting")
         logLine("Ephedrine quit")
         flushLog()
     }
@@ -536,7 +536,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
         let tabs = termTabs + cmuxTabs
         if flags.watchWorking {
-            let working = tabs.contains { claudeWorkingVisible($0.text) }
+            // A cmux pane counts only once its live tail agrees, and is asked only when Terminal doesn't settle it.
+            let working = termTabs.contains { claudeWorkingVisible($0.text) }
+                || cmuxWorkingConfirmed(cmuxTabs.filter { claudeWorkingVisible($0.text) }, cli: flags.cmuxCLI)
             if working != lastWorkingSeen && !tabs.isEmpty {   // 0 tabs = failed read
                 lastWorkingSeen = working
                 if working {
@@ -561,7 +563,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         }
         endCmuxEpisodes()
         // A retry still to come counts as Claude working (keeps lid-closed mode on).
-        let retrying = flags.mode != .off && continueStates.values.contains { $0.attempts < flags.mode.maxAttempts }
+        let retrying = continueRetrying(attempts: continueStates.values.map(\.attempts), mode: flags.mode)
         DispatchQueue.main.async { [weak self] in self?.retryPending = retrying }
 
         // Stay awake only for a scheduled wait, never just because limit text
@@ -581,7 +583,13 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         guard let gap else { return }
         logLine("network back after \(Int(gap.rounded()))s")
         guard shouldNudge(gap: gap, threshold: settings.outageNudgeSeconds, targets: settings.tmuxTargets,
-                          awake: fullyAwake, downSince: downSince, lastSleep: lastWillSleep) else { return }
+                          awake: fullyAwake, downSince: downSince, lastSleep: lastWillSleep) else {
+            if let why = nudgeSkipReason(gap: gap, threshold: settings.outageNudgeSeconds, targets: settings.tmuxTargets,
+                                         awake: fullyAwake, downSince: downSince, lastSleep: lastWillSleep) {
+                logLine("tmux nudge: not typing, \(why)")
+            }
+            return
+        }
         nudgeTmux(targets: settings.tmuxTargets, pressEnter: settings.tmuxPressEnter, canTypeNow: canTypeNow)
     }
 
@@ -626,19 +634,28 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
                 st.attempts = flags.mode.maxAttempts   // typing changed nothing there: done with this error (logged then)
             } else if now >= st.nextTryAt && st.attempts < flags.mode.maxAttempts {
                 let result = sendToTab("continue", tab.source, trigger: .apiError, canTypeNow: canTypeNow)
-                if result != .notAwake {   // not awake: nothing typed or counted, it tries again next scan
-                    st.attempts += 1
-                    st.nextTryAt = now.addingTimeInterval(flags.mode.delay(st.attempts))
-                    logLine("auto-continue #\(st.attempts) → \(tab.key)" + (result.skipReason.map { ", but nothing was typed: \($0)" } ?? ""))
-                    if result == .typed { noteCmuxTyped(tab.key, screen: tab.text) }
-                    if flags.mode.maxAttempts != Int.max && st.attempts >= flags.mode.maxAttempts {
-                        let n = UNMutableNotificationContent()
-                        n.title = "Ephedrine"
-                        n.body = "Auto-continue gave up after \(flags.mode.maxAttempts) tries "
-                            + "(\(tab.key.hasPrefix(cmuxKeyPrefix) ? "a cmux pane" : tab.key))."
-                        UNUserNotificationCenter.current().add(
-                            UNNotificationRequest(identifier: "ka_giveup_\(tab.key)", content: n, trigger: nil))
-                    }
+                // Not awake: nothing typed or counted, it tries again next scan. A skip ends the episode (continueAfterTry).
+                let step = continueAfterTry(result.asTry, attempts: st.attempts, nextTryAt: st.nextTryAt, mode: flags.mode,
+                                            cmux: tab.key.hasPrefix(cmuxKeyPrefix), now: now)
+                st.attempts = step.attempts
+                st.nextTryAt = step.nextTryAt
+                if step.stuck { cmuxScan.stuck.insert(tab.key) }
+                switch result {
+                case .typed:
+                    logLine("auto-continue #\(st.attempts) → \(tab.key)")
+                    noteCmuxTyped(tab.key, screen: tab.text)
+                case .skipped(let why):
+                    logLine("auto-continue → \(tab.key): nothing was typed (\(why)), so no more tries until this error is over")
+                case .notAwake:
+                    break
+                }
+                if step.gaveUp {
+                    let n = UNMutableNotificationContent()
+                    n.title = "Ephedrine"
+                    n.body = "Auto-continue gave up after \(flags.mode.maxAttempts) tries "
+                        + "(\(tab.key.hasPrefix(cmuxKeyPrefix) ? "a cmux pane" : tab.key))."
+                    UNUserNotificationCenter.current().add(
+                        UNNotificationRequest(identifier: "ka_giveup_\(tab.key)", content: n, trigger: nil))
                 }
             }
             continueStates[tab.key] = st
@@ -1196,7 +1213,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         if !settings.enabled { return "Off, macOS sleeps as usual" }
         let n = activeSessionCount()
         if n > 0 { return "Awake, Claude is working" + (n > 1 ? " (\(n) sessions)" : "") }
-        if settings.keepAwakeClaudeWorking && claudeWorkingCached { return "Awake, Claude is busy in Terminal" }
+        if settings.keepAwakeClaudeWorking && claudeWorkingCached { return "Awake, Claude is busy in a terminal" }
         if settings.autoResumeLimit && limitWaitPending { return "Awake until a usage limit resets" }
         if settings.autoResumeLimit, let at = limitResumeAts.filter({ $0 > Date() }).min(), !onACPower() {
             return "Usage limit resets \(clockStr(at)); on battery the Mac can sleep instead of waiting"
@@ -1564,6 +1581,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 // `ephedrine uninstall` calls this before deleting the app, so no dead login item is left behind.
 if CommandLine.arguments.contains("--unregister-login-item") {
     try? SMAppService.mainApp.unregister()
+    exit(0)
+}
+// And this, so the App Nap setting it wrote for other apps doesn't outlive it (quitting leaves it on purpose).
+if CommandLine.arguments.contains("--restore-app-nap") {
+    restoreAppNapOverride()
+    flushLog()
     exit(0)
 }
 

@@ -86,6 +86,45 @@ public enum AutoContinueMode: String, CaseIterable {
     }
 }
 
+/// What one try at typing "continue" for an API error came to.
+public enum ContinueTry: Equatable { case typed, skipped, notAwake }
+
+/// An error episode's retry count after one try (continueAfterTry).
+public struct ContinueTryStep: Equatable {
+    public var attempts: Int
+    public var nextTryAt: Date
+    public var stuck = false    // a cmux pane: no more typing there until this error or limit is over
+    public var gaveUp = false   // this try used up a limited mode's tries: say so, once
+}
+
+/// After a try at an unanswered API error, `attempts` tries in. Not awake:
+/// nothing typed or counted, it tries again next scan. Typed: one more try,
+/// the next after the mode's delay, and the last one a limited mode allows
+/// gives up. Skipped (cmux typed nothing: no agent, a draft, a dialog, an
+/// unreadable live screen or password): that was the episode's one try, so it
+/// ends now and doesn't count toward giving up. Counted as a try instead, a
+/// skip that keeps happening kept a retry pending forever in the mode with no
+/// limit, and with it the Mac awake with the lid shut.
+public func continueAfterTry(_ result: ContinueTry, attempts: Int, nextTryAt: Date, mode: AutoContinueMode,
+                             cmux: Bool, now: Date) -> ContinueTryStep {
+    switch result {
+    case .notAwake:
+        return ContinueTryStep(attempts: attempts, nextTryAt: nextTryAt)
+    case .skipped:
+        return ContinueTryStep(attempts: mode.maxAttempts, nextTryAt: nextTryAt, stuck: cmux)
+    case .typed:
+        let n = attempts + 1
+        return ContinueTryStep(attempts: n, nextTryAt: now.addingTimeInterval(mode.delay(n)),
+                               gaveUp: mode.maxAttempts != Int.max && n >= mode.maxAttempts)
+    }
+}
+
+/// A retry still to come in some error episode, which counts as Claude
+/// working (keeps lid-closed mode on, and "I'm leaving" awake). Off allows no tries.
+public func continueRetrying(attempts: [Int], mode: AutoContinueMode) -> Bool {
+    attempts.contains { $0 < mode.maxAttempts }
+}
+
 /// How the menu bar icon is colored.
 public enum MenuBarIconStyle: String, CaseIterable {
     case mono      // template: follows the menu bar like other icons

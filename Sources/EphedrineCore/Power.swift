@@ -82,11 +82,22 @@ public struct BatterySettle {
     }
 }
 
+/// The causes that could still hold right now, whatever the reading says:
+/// battery while Ephedrine keeps the Mac awake on battery with a floor set,
+/// heat while it keeps the Mac awake at all. Never the lid (LowPowerHold).
+public func lowPowerEligible(holding: Bool, lidHold: Bool, onBattery: Bool, floor: Int) -> Set<LowPowerCause> {
+    guard holding || lidHold else { return [] }
+    return floor > 0 && onBattery ? [.battery, .heat] : [.heat]
+}
+
 /// Low Power Mode cools the Mac and so removes its own heat cause; a Mac near
 /// serious would switch it on, off, on. While it's ours, a heat or battery
-/// cause that held is still reported until `linger` after it last held. Not
-/// the lid: opening it means the owner is back, so that ends at once. Causes
-/// are remembered even before it's ours, so the one that switched it on counts
+/// cause that held is still reported until `linger` after it last held, but
+/// only while it's still `eligible` (lowPowerEligible): the hold is for a
+/// reading that recovered, not for a cause that no longer applies (keep-awake
+/// over, plugged in, the floor set to off), which ends at once. Not the lid:
+/// opening it means the owner is back, so that ends at once too. Causes are
+/// remembered even before it's ours, so the one that switched it on counts
 /// from that tick.
 public struct LowPowerHold {
     public static let linger: TimeInterval = 300
@@ -94,31 +105,36 @@ public struct LowPowerHold {
     private var lastAt = Date.distantPast
     public init() {}
 
-    public mutating func step(cause: LowPowerCause?, ours: Bool, now: Date) -> LowPowerCause? {
+    public mutating func step(cause: LowPowerCause?, ours: Bool, eligible: Set<LowPowerCause>, now: Date) -> LowPowerCause? {
         if let c = cause { last = c; lastAt = now; return c }
-        guard ours, let held = last, held != .lid, now.timeIntervalSince(lastAt) < Self.linger else { last = nil; return nil }
+        guard ours, let held = last, held != .lid, eligible.contains(held),
+              now.timeIntervalSince(lastAt) < Self.linger else { last = nil; return nil }
         return held
     }
 }
 
 /// Ours, yet off on a settled battery (where the reading is the battery
-/// profile Ephedrine wrote) on two ticks in a row: the owner switched it off
-/// by hand. Then the marker is dropped without writing anything, so a later
-/// "off" can't undo an "on" the owner makes, and Ephedrine doesn't switch it
-/// on again until the cause has ended.
+/// profile Ephedrine wrote) on two readings at least `confirm` apart, with no
+/// other kind of reading between: the owner switched it off by hand. Timed,
+/// not counted, because evaluate() also runs on clicks and setting changes,
+/// so two readings can be moments apart. Then the marker is dropped without
+/// writing anything, so a later "off" can't undo an "on" the owner makes, and
+/// Ephedrine doesn't switch it on again until the cause has ended.
 public struct LowPowerOwnership {
     /// Time after our switch-on for the reading to catch up.
     public static let settle: TimeInterval = 10
-    private var offTicks = 0
+    /// The two "off" readings are at least this far apart.
+    public static let confirm: TimeInterval = 3
+    private var firstOffAt: Date?
     public private(set) var ownerTookOver = false
     public init() {}
 
     /// True when the marker should be dropped (once per takeover).
-    public mutating func step(ours: Bool, settled: Bool, inFlight: Bool, sinceOurSwitchOn: TimeInterval, modeOn: Bool) -> Bool {
-        guard ours, settled, !inFlight, sinceOurSwitchOn >= Self.settle, !modeOn else { offTicks = 0; return false }
-        offTicks += 1
-        guard offTicks >= 2 else { return false }
-        offTicks = 0
+    public mutating func step(ours: Bool, settled: Bool, inFlight: Bool, sinceOurSwitchOn: TimeInterval, modeOn: Bool, now: Date) -> Bool {
+        guard ours, settled, !inFlight, sinceOurSwitchOn >= Self.settle, !modeOn else { firstOffAt = nil; return false }
+        guard let first = firstOffAt else { firstOffAt = now; return false }
+        guard now.timeIntervalSince(first) >= Self.confirm else { return false }
+        firstOffAt = nil
         ownerTookOver = true
         return true
     }

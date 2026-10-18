@@ -61,6 +61,49 @@ import Foundation
     #expect(AutoContinueMode.off.maxAttempts == 0)
 }
 
+// Final review C1: a cmux send that typed nothing is the episode's one try.
+// Counted as a try, a skip that kept happening left a retry pending forever
+// in persistent mode, which held a lid-shut Mac awake and kept "I'm leaving" up.
+@Test func skippedSendEndsTheEpisode() {
+    let t0 = Date(timeIntervalSince1970: 1000)
+    let s = continueAfterTry(.skipped, attempts: 0, nextTryAt: t0, mode: .persistent, cmux: true, now: t0)
+    #expect(s.attempts == Int.max)
+    #expect(s.stuck)
+    #expect(!s.gaveUp)
+    #expect(!continueRetrying(attempts: [s.attempts], mode: .persistent))
+    // Counted as one try, as before the fix, it was still retrying.
+    #expect(continueRetrying(attempts: [1], mode: .persistent))
+}
+@Test func skipsNeverReportGivingUp() {
+    let t0 = Date(timeIntervalSince1970: 1000)
+    for before in 0..<5 {   // whichever try it is, even the last a fast mode allows
+        let s = continueAfterTry(.skipped, attempts: before, nextTryAt: t0, mode: .fast, cmux: true, now: t0)
+        #expect(!s.gaveUp)
+        #expect(s.attempts == 5)
+        #expect(!continueRetrying(attempts: [s.attempts], mode: .fast))
+    }
+    // Only a cmux pane is marked stuck.
+    #expect(!continueAfterTry(.skipped, attempts: 0, nextTryAt: t0, mode: .fast, cmux: false, now: t0).stuck)
+}
+@Test func typedAndNotAwakeTriesKeepTheirCount() {
+    let t0 = Date(timeIntervalSince1970: 1000)
+    // Typed: one more try, the next after the mode's delay; the last allowed one gives up.
+    let a = continueAfterTry(.typed, attempts: 0, nextTryAt: t0, mode: .fast, cmux: true, now: t0)
+    #expect(a == ContinueTryStep(attempts: 1, nextTryAt: t0 + 15))
+    #expect(continueRetrying(attempts: [a.attempts], mode: .fast))
+    let last = continueAfterTry(.typed, attempts: 4, nextTryAt: t0, mode: .fast, cmux: true, now: t0)
+    #expect(last.attempts == 5 && last.gaveUp && !last.stuck)
+    #expect(!continueRetrying(attempts: [last.attempts], mode: .fast))
+    let p = continueAfterTry(.typed, attempts: 41, nextTryAt: t0, mode: .persistent, cmux: false, now: t0)
+    #expect(p == ContinueTryStep(attempts: 42, nextTryAt: t0 + 60))   // persistent never gives up
+    #expect(continueRetrying(attempts: [p.attempts], mode: .persistent))
+    // Not awake: nothing typed or counted, it tries again next scan.
+    #expect(continueAfterTry(.notAwake, attempts: 2, nextTryAt: t0, mode: .backoff, cmux: true, now: t0 + 99)
+            == ContinueTryStep(attempts: 2, nextTryAt: t0))
+    // Off never retries.
+    #expect(!continueRetrying(attempts: [0], mode: .off))
+}
+
 // ── Terminal text classifiers ──
 
 let claudeErrorScreen = """

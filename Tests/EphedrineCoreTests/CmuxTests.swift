@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import EphedrineCore
 
@@ -438,3 +439,70 @@ private let errorAtPrompt = """
 
 private func cmuxLiveTrigger(_ t: CmuxLiveTrigger) -> CmuxLiveTrigger { t }
 
+
+// Final review R51: the scan's read can be a view the owner scrolled to, so a
+// cmux pane counts as Claude working only once its live tail shows it too,
+// read at most once a minute per pane.
+private let workingAtPrompt = """
+✻ Crunching… (12s · ↓ 1.2k tokens · esc to interrupt)
+
+────────────────────────────────────────
+❯\u{00A0}
+────────────────────────────────────────
+  ? for shortcuts
+"""
+
+@Test func liveTailWorkingSkipsBlankRows() {
+    #expect(cmuxLiveTailWorking(workingAtPrompt))
+    // A screen that isn't full: blank rows under the cursor fill the bottom of the read.
+    #expect(cmuxLiveTailWorking(workingAtPrompt + String(repeating: "\n", count: 40)))
+    #expect(cmuxLiveTailWorking(workingAtPrompt + String(repeating: "\n   ", count: 40)))
+    #expect(!cmuxLiveTailWorking(idlePrompt + String(repeating: "\n", count: 40)))
+    // Working text far above an idle bottom (old output) doesn't count.
+    #expect(!cmuxLiveTailWorking(workingAtPrompt + "\n" + String(repeating: "output line\n", count: 30) + idlePrompt))
+    #expect(!cmuxLiveTailWorking(""))
+}
+
+@Test func workingCheckConfirmsOnTheLiveTail() {
+    let t0 = Date(timeIntervalSince1970: 1000)
+    var c = CmuxWorkingCheck()
+    var reads: [String] = []
+    func run(_ panes: [String], _ t: TimeInterval, _ answer: [String: Bool?]) -> Bool {
+        c.anyWorking(panes, now: t0 + t) { key in reads.append(key); return answer[key] ?? nil }
+    }
+    // No candidates: nothing read, not working.
+    #expect(!run([], 0, [:])); #expect(reads.isEmpty)
+    // The live tail disagrees: the pane doesn't count, and isn't read again within the minute.
+    #expect(!run(["cmux:a"], 0, ["cmux:a": false]))
+    #expect(!run(["cmux:a"], 9, ["cmux:a": true]))
+    #expect(!run(["cmux:a"], 59.9, ["cmux:a": true]))
+    #expect(reads == ["cmux:a"])
+    // A minute on, it's read again.
+    #expect(run(["cmux:a"], 60, ["cmux:a": true]))
+    #expect(reads == ["cmux:a", "cmux:a"])
+    // A confirmed pane keeps counting for the minute without another read.
+    #expect(run(["cmux:a"], 69, ["cmux:a": false]))
+    #expect(reads.count == 2)
+}
+
+@Test func workingCheckStopsOnNoAnswer() {
+    let t0 = Date(timeIntervalSince1970: 1000)
+    var c = CmuxWorkingCheck()
+    var reads: [String] = []
+    func run(_ panes: [String], _ t: TimeInterval, _ answer: [String: Bool?]) -> Bool {
+        c.anyWorking(panes, now: t0 + t) { key in reads.append(key); return answer[key] ?? nil }
+    }
+    // No answer from the first pane: not working, and the rest wait for the next scan.
+    #expect(!run(["cmux:a", "cmux:b"], 0, ["cmux:a": nil, "cmux:b": true]))
+    #expect(reads == ["cmux:a"])
+    // Next scan: the silent pane isn't asked again within the minute, the other is.
+    #expect(run(["cmux:a", "cmux:b"], 9, ["cmux:a": true, "cmux:b": true]))
+    #expect(reads == ["cmux:a", "cmux:b"])
+    // A pane already confirmed is enough: nothing else is read.
+    #expect(run(["cmux:c", "cmux:b"], 18, ["cmux:c": true]))
+    #expect(reads == ["cmux:a", "cmux:b"])
+    // forget() drops every answer.
+    c.forget()
+    #expect(run(["cmux:b"], 20, ["cmux:b": false]) == false)
+    #expect(reads == ["cmux:a", "cmux:b", "cmux:b"])
+}

@@ -76,3 +76,27 @@ import Foundation
     #expect(!n(since: nil))
     #expect(n(sleep: .distantPast))
 }
+// Parked from Task 6: a nudge dropped for a reason worth knowing says so in the
+// log; a short blip or an empty pane list stays quiet.
+@Test func nudgeSkipReasons() {
+    let up = Date(timeIntervalSince1970: 1000), slept = Date(timeIntervalSince1970: 500)
+    func r(gap: TimeInterval = 90, targets: [String] = ["%1"], awake: Bool = true, since: Date? = up, sleep: Date = slept) -> String? {
+        nudgeSkipReason(gap: gap, threshold: 90, targets: targets, awake: awake, downSince: since, lastSleep: sleep)
+    }
+    #expect(r() == nil)                                   // it nudges
+    #expect(r(awake: false) == "the Mac isn't fully awake")
+    #expect(r(sleep: Date(timeIntervalSince1970: 1500)) == "the outage began before the Mac last went to sleep")
+    #expect(r(sleep: up) == "the outage began before the Mac last went to sleep")
+    #expect(r(gap: 89.9) == nil)                          // below the threshold: quiet
+    #expect(r(gap: 89.9, awake: false) == nil)
+    #expect(r(targets: []) == nil)                        // no panes listed: quiet
+    #expect(r(targets: [], awake: false) == nil)
+    #expect(r(awake: false, since: nil) == nil)
+    // It names a reason exactly when shouldNudge says no for a reason that isn't quiet.
+    for awake in [true, false] {
+        for sleep in [slept, up, Date(timeIntervalSince1970: 1500)] {
+            let nudges = shouldNudge(gap: 90, threshold: 90, targets: ["%1"], awake: awake, downSince: up, lastSleep: sleep)
+            #expect(nudges == (r(awake: awake, sleep: sleep) == nil))
+        }
+    }
+}

@@ -235,8 +235,10 @@ func uninstallLidSetup() -> String? {
 }
 
 /// A detached shell that outlives a crash: once this process is gone (and no
-/// new Ephedrine has taken over), it un-pauses apps, turns disablesleep and
-/// our Low Power Mode back off, and unmutes the sound the lid-shut hold muted.
+/// new Ephedrine has taken over), it un-pauses apps, turns our Low Power Mode
+/// back off, unmutes the sound the lid-shut hold muted, and turns disablesleep
+/// off last: with the lid shut the Mac can sleep the moment it's off, before
+/// any line after it runs. Each line stands on its own.
 final class LidWatchdog {
     private var proc: Process?
     /// `mutingPath`: the marker that exists while the hold has the default output muted.
@@ -252,9 +254,9 @@ final class LidWatchdog {
             while /bin/kill -0 \(getpid()) 2>/dev/null; do /bin/sleep 5; done
             /usr/bin/pgrep -xq Ephedrine && exit 0
             [ -s \(pids) ] && /bin/kill -CONT $(/bin/cat \(pids)) 2>/dev/null
-            [ -f \(marker) ] && /usr/bin/sudo -n /usr/bin/pmset -a disablesleep 0 && /bin/rm -f \(marker)
             [ -f \(lowPower) ] && /usr/bin/sudo -n /usr/bin/pmset -b lowpowermode 0 && /bin/rm -f \(lowPower)
             [ -f \(muting) ] && /usr/bin/osascript -e 'set volume without output muted' && /bin/rm -f \(muting)
+            [ -f \(marker) ] && /usr/bin/sudo -n /usr/bin/pmset -a disablesleep 0 && /bin/rm -f \(marker)
             """]
         p.standardInput = FileHandle.nullDevice
         p.standardOutput = FileHandle.nullDevice
@@ -381,6 +383,10 @@ extension AppController {
             switch why {
             case .windowOver:
                 logLine("Remote Control check-in over: " + (claudeBusy ? "Claude is working, so the Mac stays awake" : "nothing came in"))
+                // The window became a Claude-driven hold: the Docker rule the hold's start left alone runs now.
+                if claudeBusy && lidHoldActive && settings.lidDockerRule && !awayMode && !dockerPaused {
+                    pauseDockerIfIdle(generation: lidHoldGeneration)
+                }
             case .noFullWake:
                 logLine("Remote Control check-in gave up: still napping after \(Int(RemoteCheckIn.fullWakeTimeout))s")
             default:
@@ -509,8 +515,9 @@ extension AppController {
                 if n > 0 { logLine("lid shut, turned the keyboard light off" + (n > 1 ? " on \(n) keyboards" : "")) }
             }
         }
-        // "I'm leaving" owns the paused list while it's on.
-        if settings.lidDockerRule && !awayMode && !dockerPaused { pauseDockerIfIdle(generation: lidHoldGeneration) }
+        // "I'm leaving" owns the paused list while it's on. A check-in's window
+        // leaves Docker alone; stepCheckIn runs the rule if it becomes Claude's hold.
+        if settings.lidDockerRule && !awayMode && !dockerPaused && !checkIn.isOpen { pauseDockerIfIdle(generation: lidHoldGeneration) }
     }
 
     /// Everything the hold did comes undone, in one place: the sound and the
@@ -609,20 +616,24 @@ extension AppController {
         // without writing, so no later "off" can undo an "on" they make.
         let onSince = lowPowerOnAt ?? ((try? fm.attributesOfItem(atPath: lowPowerMarkerPath))?[.modificationDate] as? Date) ?? now
         if lowPowerOwnership.step(ours: ours, settled: settled, inFlight: lowPowerApplying || lowPowerChecking || lidApplying,
-                                  sinceOurSwitchOn: now.timeIntervalSince(onSince), modeOn: modeOn) {
+                                  sinceOurSwitchOn: now.timeIntervalSince(onSince), modeOn: modeOn, now: now) {
             try? fm.removeItem(atPath: lowPowerMarkerPath)
             lowPowerOnAt = nil
             updateWatchdog()
             logLine("Low Power Mode: turned off by hand, no longer Ephedrine's")
             return
         }
-        let found = lowPowerCause(holding: holding, lidHold: lidShutHold(closed: lidClosedNow()),
-                                  onLidShut: settings.lowPowerOnLidShut, onBattery: !onACPower(), percent: percent,
+        let lidHold = lidShutHold(closed: lidClosedNow())
+        let onBattery = !onACPower()
+        let found = lowPowerCause(holding: holding, lidHold: lidHold,
+                                  onLidShut: settings.lowPowerOnLidShut, onBattery: onBattery, percent: percent,
                                   floor: settings.lowPowerFloor, thermal: ProcessInfo.processInfo.thermalState)
         // Heat and battery are held 5 min while ours, and while the owner has
         // taken over (so a heat cause that flickers doesn't end the takeover
-        // early). The lid isn't: opening it ends Low Power Mode at once.
-        let cause = lowPowerHold.step(cause: found, ours: ours || lowPowerOwnership.ownerTookOver, now: now)
+        // early), as long as they still apply. The lid isn't: opening it ends
+        // Low Power Mode at once.
+        let eligible = lowPowerEligible(holding: holding, lidHold: lidHold, onBattery: onBattery, floor: settings.lowPowerFloor)
+        let cause = lowPowerHold.step(cause: found, ours: ours || lowPowerOwnership.ownerTookOver, eligible: eligible, now: now)
         lowPowerOwnership.noteCause(cause)
         guard !lidApplying else { return }        // a lid flip or a setup removal is running
         checkLowPowerRule(settled: settled)
@@ -631,8 +642,10 @@ extension AppController {
         case .turnOn(let c)?:
             // Only where isLowPowerModeEnabled is the battery profile that `-b`
             // writes, once the rule is known to allow it, and not against an
-            // owner who switched ours off during this cause.
-            guard settled, lowPowerRuleOK == true, !lowPowerOwnership.ownerTookOver else { return }
+            // owner who switched ours off during this cause. Not in a Remote
+            // Control check-in's window either: it comes on once the
+            // window has become a Claude-driven hold.
+            guard settled, lowPowerRuleOK == true, !lowPowerOwnership.ownerTookOver, !checkIn.isOpen else { return }
             flipLowPower(true, cause: c)
         case .turnOff?:
             flipLowPower(false, cause: nil)   // also after a crash: the marker is still there at launch
@@ -643,9 +656,10 @@ extension AppController {
 
     /// Asks whether the rule allows Low Power Mode: at launch, after setup, and
     /// while it doesn't after 1, 5, then every 15 minutes (sudo logs each
-    /// refusal). Only on battery (see lowPowerAllowed).
+    /// refusal). Only on battery (see lowPowerAllowed), and not in a check-in's
+    /// window, where Low Power Mode isn't switched on anyway.
     private func checkLowPowerRule(settled: Bool) {
-        guard lidSetupOK, settled, !lowPowerChecking, !lowPowerApplying else { return }
+        guard lidSetupOK, settled, !lowPowerChecking, !lowPowerApplying, !checkIn.isOpen else { return }
         guard lowPowerRuleOK == nil || (lowPowerRuleOK == false
             && Date().timeIntervalSince(lowPowerCheckedAt) >= lowPowerRecheckDelay(failures: lowPowerCheckFailures)) else { return }
         lowPowerChecking = true

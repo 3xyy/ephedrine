@@ -95,9 +95,9 @@ The heat setting uses macOS's thermal pressure level (Warm, Hot, Very hot) becau
 
 ## With the lid shut
 
-These happen while Claude is working with the lid shut and no external display, and are undone when you open the lid or Ephedrine quits. If the app crashes, a watchdog undoes what a shell can, and the next launch finishes the rest.
+These happen while lid-closed mode keeps the Mac awake with the lid shut and no external display, whether for Claude or for Stay awake, and are undone when you open the lid or Ephedrine quits. A Remote Control check-in counts too: for its 2-minute window apps are paused and the sound is muted, if you have those on, and Low Power Mode and the Docker pause only start if the check-in turns into work. If the app crashes, a watchdog undoes what a shell can, and the next launch finishes the rest.
 
-- Low Power Mode comes on to save battery. It also comes on when the battery drops below the level you pick (50, 40 or 30%, or never), and when the Mac gets hot. It only turns off a Low Power Mode Ephedrine turned on, never one you set yourself. At critical heat Ephedrine stops keeping the Mac awake at all and says so in a notification, until it cools down. This needs the lid setup re-run once, as described under Permissions.
+- Low Power Mode comes on to save battery. It also comes on when the battery drops below the level you pick (50, 40 or 30%, or never), and when the Mac gets hot. Once the heat or low battery has passed, it stays on for up to 5 more minutes while Ephedrine is still keeping the Mac awake, so it doesn't flip on and off. It only turns off a Low Power Mode Ephedrine turned on, never one you set yourself. At critical heat Ephedrine stops keeping the Mac awake at all and says so in a notification, until it cools down. This needs the lid setup re-run once, as described under Permissions.
 - The sound is muted and comes back when you open the lid. If you unmuted it yourself in between, it's left alone.
 - The keyboard light goes off. That uses a private macOS interface, so on a macOS version where it doesn't match, Ephedrine skips it and Settings says so.
 - Docker Desktop is paused, if you turn that on (it's off by default), but only when no container is running. Ephedrine asks Docker twice, and if it doesn't answer, Docker keeps running.
@@ -105,7 +105,7 @@ These happen while Claude is working with the lid shut and no external display, 
 
 ## App Nap
 
-macOS slows down apps it thinks you aren't looking at. If you turn on "Never let App Nap slow down terminals, editors and Claude" in General, Ephedrine sets `NSAppSleepDisabled` for those apps. It writes down each app's old value first and puts it back when you turn the switch off. Each app notices the next time it opens. It's off by default.
+macOS slows down apps it thinks you aren't looking at. If you turn on "Never let App Nap slow down terminals, editors and Claude" in General, Ephedrine sets `NSAppSleepDisabled` for those apps. It writes down each app's old value first and puts it back when you turn the switch off or run `ephedrine uninstall`. Each app notices the next time it opens. It's off by default.
 
 ## Network outages
 
@@ -155,7 +155,7 @@ To stop macOS re-asking for permissions after every rebuild, create a self-signe
 
 The log is at `~/.claude/ephedrine/ephedrine.log`.
 
-To try the lid features with the lid open, build the simulation variant with `LID_SIMULATION=1 scripts/build.sh`. It reads `~/.claude/ephedrine/simulate-lid` instead of the lid sensor, and the file says `closed` or `open`. With no file it uses the real lid. The menu shows "Lid simulation build" so you can't mistake it for the normal app. The normal build has none of this code.
+To try the lid features with the lid open, build the simulation variant with `LID_SIMULATION=1 scripts/build.sh`. It reads `~/.claude/ephedrine/simulate-lid` instead of the lid sensor, and the file says `closed` or `open`. With no file it uses the real lid. The menu shows "Lid simulation build" so you can't mistake it for the normal app. The normal build never reads that file.
 
 ## License
 

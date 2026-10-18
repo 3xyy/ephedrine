@@ -115,10 +115,11 @@ extension AppController {
         }
     }
 
-    /// Still the same hold, still on, and nothing else owns the paused list.
+    /// Still the same hold, still on, nothing else owns the paused list, and
+    /// not in a Remote Control check-in's window.
     private func dockerRuleStillWanted(_ generation: Int) -> Bool {
         generation == lidHoldGeneration && lidHoldActive && lidShutHold(closed: lidClosedNow())
-            && settings.lidDockerRule && !awayMode && !dockerPaused
+            && settings.lidDockerRule && !awayMode && !dockerPaused && !checkIn.isOpen
     }
 
     /// SIGSTOP Docker Desktop's processes through stopRecorded, the way

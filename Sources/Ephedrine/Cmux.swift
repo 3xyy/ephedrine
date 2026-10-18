@@ -175,6 +175,8 @@ extension AppController {
         var stalls = 0                      // scans in a row that cmux didn't fully answer
         var textAtSend: [String: String] = [:]   // pane key → its screen when Ephedrine last typed there
         var stuck: Set<String> = []         // panes whose screen didn't change after typing: no more typing this episode
+        var working = CmuxWorkingCheck()    // live-tail answers for "Claude working" (cmuxWorkingConfirmed)
+        var scrolledNoted: Set<String> = [] // panes logged as working only in a scrolled view, until that changes
     }
 
     /// Runs on continueQueue. cmux's panes for this scan, read only while cmux
@@ -270,6 +272,37 @@ extension AppController {
         if errorSkipLogged.keys.contains(where: isCmux) { errorSkipLogged = errorSkipLogged.filter { !isCmux($0.key) } }
         cmuxScan.textAtSend.removeAll()
         cmuxScan.stuck.removeAll()
+        cmuxScan.working.forget()
+        cmuxScan.scrolledNoted.removeAll()
+    }
+
+    /// Whether any of these cmux panes, whose scan shows Claude working, also
+    /// shows it at the bottom of its buffer: one live-tail read per pane at
+    /// most once a minute (CmuxWorkingCheck). The scan's own read may be a
+    /// view the owner scrolled to, and old text there must not hold the Mac
+    /// awake (continueQueue).
+    func cmuxWorkingConfirmed(_ candidates: [ScanTab], cli: String?) -> Bool {
+        guard let cli, !candidates.isEmpty else { return false }
+        var ids: [String: String] = [:]
+        for tab in candidates { if case .cmux(let id) = tab.source { ids[tab.key] = id } }
+        var password: String?, passwordRead = false   // read once, and only if a pane needs a read
+        var confirmed: [String] = [], scrolled: [String] = []
+        var check = cmuxScan.working   // a copy, so the reads below can't overlap an access to cmuxScan
+        let working = check.anyWorking(candidates.map(\.key), now: Date()) { key in
+            if !passwordRead { password = CmuxKeychain.read().password; passwordRead = true }
+            guard let id = ids[key], let pw = password else { return nil }
+            let r = runCmux(cli, cmuxLiveTailArgs(id), password: pw)
+            guard !r.timedOut, r.status == 0 else { return nil }
+            let shows = cmuxLiveTailWorking(r.out)
+            if shows { confirmed.append(key) } else { scrolled.append(key) }
+            return shows
+        }
+        cmuxScan.working = check
+        for key in confirmed { cmuxScan.scrolledNoted.remove(key) }
+        for key in scrolled where cmuxScan.scrolledNoted.insert(key).inserted {
+            logLine("cmux: \(key) shows Claude working only above the bottom of the pane, not counting it")
+        }
+        return working
     }
 
     /// After a cmux send, remember the scan's screen it was typed against

@@ -84,7 +84,10 @@ enum SendResult: Equatable {
     case skipped(String)   // nothing typed, and why
     case notAwake          // nothing typed: the Mac isn't fully awake, or only just woke
 
-    var skipReason: String? { if case .skipped(let why) = self { return why }; return nil }
+    /// For the retry count (continueAfterTry).
+    var asTry: ContinueTry {
+        switch self { case .typed: return .typed; case .skipped: return .skipped; case .notAwake: return .notAwake }
+    }
 }
 
 /// Type text + Return into a scanned tab. Right before typing, `canTypeNow`
