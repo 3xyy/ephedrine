@@ -69,7 +69,9 @@ struct LidPane: View {
                     Button("Set up lid-closed mode…") { controller.setupLid() }
                     Tip("Asks for your password once.")
                 }
+                hotspotSection
         } else {
+                hotspotSection
                 Section {
                     Toggle(isOn: $settings.lidWhileClaude) {
                         Text("While Claude is working")
@@ -118,27 +120,6 @@ struct LidPane: View {
                         Tip("Adds Low Power Mode to what Ephedrine may switch. Asks for your password once.")
                     }
                 }
-                Section("iPhone hotspot") {
-                    LabeledContent("Status", value: controller.hotspotStatus)
-                    TextField("Network name", text: $ui.hotspotSSID)
-                    HStack {
-                        SecureField("Password", text: $ui.hotspotPassword)
-                            .onSubmit(saveHotspot)
-                        Button("Save", action: saveHotspot)
-                    }
-                    Tip("While Ephedrine is keeping the Mac awake and Wi-Fi has been down for 5 seconds, the Mac tries to join this hotspot, again after 5, 10, 20 and then every 30 seconds. The password is kept in your keychain. Leave it empty to keep the saved one; saving an empty name removes the hotspot.")
-                    LabeledContent("Location", value: controller.locationStatus)
-                    if !controller.location.allowed {
-                        Button("Open Location Services") {
-                            if let url = URL(string: locationServicesURL) { NSWorkspace.shared.open(url) }
-                        }
-                    }
-                    Tip("macOS only shows apps Wi-Fi network names when Location is allowed. Ephedrine never reads your location. Set System Settings › Wi-Fi › Ask to join hotspots to Automatically.")
-                }
-                .task {   // on one section: on the Group it would run once per child
-                    if ui.hotspotSSID.isEmpty { ui.hotspotSSID = settings.hotspotSSID }
-                    controller.refreshHotspot()
-                }
                 Section("Sleep anyway, even mid-task") {
                     Picker("Too hot at", selection: $settings.lidHeatLimit) {
                         Text("Warm").tag(LidHeatLimit.warm)
@@ -161,8 +142,40 @@ struct LidPane: View {
 }
 
 extension LidPane {
+    /// Shown with or without lid setup: joins run whenever Ephedrine holds the Mac awake.
+    @ViewBuilder fileprivate var hotspotSection: some View {
+        Section("iPhone hotspot") {
+            LabeledContent("Status", value: controller.hotspotStatus)
+            TextField("Network name", text: $ui.hotspotSSID)
+            HStack {
+                SecureField("Password", text: $ui.hotspotPassword)
+                    .onSubmit(saveHotspot)
+                Button("Save", action: saveHotspot)
+            }
+            if !ui.hotspotMessage.isEmpty { Tip(ui.hotspotMessage) }
+            if !controller.hotspotName.isEmpty {
+                Button("Remove hotspot", role: .destructive) {
+                    controller.removeHotspot()
+                    ui.hotspotSSID = ""; ui.hotspotPassword = ""; ui.hotspotMessage = ""
+                }
+            }
+            Tip("While Ephedrine is keeping the Mac awake and Wi-Fi has been down for 5 seconds, the Mac tries to join this hotspot: the first try after 5 seconds, then after 10, 20 and 30 seconds, then every 30 seconds. It doesn't try while Wi-Fi is switched off or another connection, such as Ethernet, is working. The password is kept in your keychain. Leave it empty to keep the saved one.")
+            LabeledContent("Location", value: controller.locationStatus)
+            if !controller.location.allowed && !controller.location.restricted {
+                Button("Open Location Services") {
+                    if let url = URL(string: locationServicesURL) { NSWorkspace.shared.open(url) }
+                }
+            }
+            Tip("macOS only shows apps Wi-Fi network names when Location is allowed. Ephedrine never reads your location. Set System Settings › Wi-Fi › Ask to join hotspots to Automatically.")
+        }
+        .task {   // on one section: on the Group it would run once per child
+            if ui.hotspotSSID.isEmpty { ui.hotspotSSID = settings.hotspotSSID }
+            controller.refreshHotspot()
+        }
+    }
+
     fileprivate func saveHotspot() {
-        controller.saveHotspot(ssid: ui.hotspotSSID, password: ui.hotspotPassword)
+        ui.hotspotMessage = controller.saveHotspot(ssid: ui.hotspotSSID, password: ui.hotspotPassword) ?? ""
         ui.hotspotPassword = ""
     }
 }

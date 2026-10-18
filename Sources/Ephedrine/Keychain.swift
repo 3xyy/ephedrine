@@ -55,12 +55,20 @@ enum Keychain {
     static func save(service: String, account: String, label: String, password: String) -> OSStatus {
         dispatchPrecondition(condition: .onQueue(.main))
         let data = Data(password.utf8)
-        var add = item(service, account)
-        add[kSecValueData as String] = data
-        add[kSecAttrLabel as String] = label
-        let s = SecItemAdd(add as CFDictionary, nil)
-        guard s == errSecDuplicateItem else { return s }
-        return SecItemUpdate(item(service, account) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        func attempt() -> OSStatus {
+            var add = item(service, account)
+            add[kSecValueData as String] = data
+            add[kSecAttrLabel as String] = label
+            let s = SecItemAdd(add as CFDictionary, nil)
+            guard s == errSecDuplicateItem else { return s }
+            return SecItemUpdate(item(service, account) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        }
+        let s = attempt()
+        // A read on another thread had interaction switched off at that moment:
+        // wait for it to finish (reads are quick), then try once more.
+        guard s == errSecInteractionNotAllowed else { return s }
+        interactionLock.lock(); interactionLock.unlock()
+        return attempt()
     }
 
     /// Remove the item; already gone counts as done. Main thread only, like save.

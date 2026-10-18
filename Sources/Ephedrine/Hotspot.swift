@@ -49,6 +49,7 @@ final class LocationAccess: NSObject, CLLocationManagerDelegate {
 
     var status: CLAuthorizationStatus { manager.authorizationStatus }
     var allowed: Bool { status == .authorizedAlways }
+    var restricted: Bool { status == .restricted }   // a profile or Screen Time forbids it; the owner can't change it
 
     /// Ask, once; after an answer only System Settings can change it.
     func request() { if status == .notDetermined { manager.requestWhenInUseAuthorization() } }
@@ -63,10 +64,19 @@ extension AppController {
     /// Main thread, every tick. Starts a join when the gate says so; the attempt runs on hotspotQueue.
     func hotspotTick(holding: Bool) {
         let up = networkWatch.wifiSatisfied
-        if up { hotspotNotified = false; hotspotNoted = false }
+        if up { hotspotNotified = false; hotspotNoted = false; hotspotNotedOff = false }
         guard !hotspotJoining else { return }
         let ssid = hotspotName
-        guard hotspotGate.step(wifiUp: up, holding: holding, fullyAwake: fullyAwake, configured: !ssid.isEmpty, now: Date()) else { return }
+        // The radio is only asked while Wi-Fi is down. Switched off on purpose: not eligible, and never turned on here.
+        let radioOn = up || CWWiFiClient.shared().interface()?.powerOn() ?? false
+        let quiet = Date().timeIntervalSince(lastFullWake) > postWakeQuiet
+        if !up && radioOn { hotspotNotedOff = false }
+        if !up && !radioOn && !hotspotNotedOff && holding && fullyAwake && !ssid.isEmpty {
+            hotspotNotedOff = true
+            logLine("hotspot: Wi-Fi is switched off, not joining")
+        }
+        guard hotspotGate.step(wifiUp: up, holding: holding, fullyAwake: fullyAwake, configured: !ssid.isEmpty,
+                               wifiOn: radioOn, anyPathUp: networkWatch.anySatisfied, afterWakeQuiet: quiet, now: Date()) else { return }
         hotspotJoining = true
         if !location.allowed && !hotspotNoted {
             hotspotNoted = true
@@ -116,28 +126,46 @@ extension AppController {
         }
     }
 
-    /// Save from Settings (main thread, where a keychain question can't stall a join). An empty name
-    /// removes the hotspot; an empty password keeps the one saved. The first save asks for Location.
-    func saveHotspot(ssid rawSSID: String, password: String) {
+    /// Save from Settings (main thread, where a keychain question can't stall a join). An empty password
+    /// keeps the one saved, and moves it along when the name changes. Returns what to tell the owner, nil when saved.
+    /// The first save asks for Location.
+    func saveHotspot(ssid rawSSID: String, password: String) -> String? {
         let ssid = rawSSID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !ssid.isEmpty else { return "Enter the hotspot's name" }
         let old = hotspotName
-        if ssid.isEmpty {
-            if !old.isEmpty {
-                let s = HotspotKeychain.delete(ssid: old)
-                logLine(s == errSecSuccess ? "hotspot removed" : "couldn't remove the hotspot password (OSStatus \(s))")
+        var pw = password
+        if pw.isEmpty && !old.isEmpty && old != ssid {
+            switch HotspotKeychain.read(ssid: old) {
+            case (let saved?, _): pw = saved
+            case (nil, .unreadable): return "The saved password can't be read, so enter it again to rename"
+            case (nil, _): break   // none saved: only the name changes
             }
-            settings.hotspotSSID = ""
-            hotspotPassword = .ok
-            return
         }
-        if !password.isEmpty {
-            let s = HotspotKeychain.save(ssid: ssid, password: password)
-            logLine(s == errSecSuccess ? "hotspot \(ssid) saved" : "couldn't save the hotspot password (OSStatus \(s))")
+        if !pw.isEmpty {
+            let s = HotspotKeychain.save(ssid: ssid, password: pw)
+            guard s == errSecSuccess else {
+                logLine("couldn't save the hotspot password (OSStatus \(s))")
+                return "Couldn't save the password (OSStatus \(s))"
+            }
+            logLine("hotspot \(ssid) saved")
         }
         if !old.isEmpty && old != ssid { _ = HotspotKeychain.delete(ssid: old) }
         settings.hotspotSSID = ssid
         location.request()
         refreshHotspot()
+        return nil
+    }
+
+    /// Delete the saved password and forget the name.
+    func removeHotspot() {
+        let old = hotspotName
+        if !old.isEmpty {
+            let s = HotspotKeychain.delete(ssid: old)
+            guard s == errSecSuccess else { logLine("couldn't remove the hotspot password (OSStatus \(s))"); return }
+            logLine("hotspot removed")
+        }
+        settings.hotspotSSID = ""
+        hotspotPassword = .ok
     }
 
     /// The hotspot line in Settings › Lid.
@@ -154,6 +182,7 @@ extension AppController {
         switch location.status {
         case .authorizedAlways: return "Allowed"
         case .notDetermined: return "Not asked yet (asked when you save)"
+        case .restricted: return "Restricted on this Mac"
         default: return "Off, so macOS may hide network names"
         }
     }

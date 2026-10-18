@@ -32,7 +32,40 @@ import Foundation
     #expect(!s(false, 100)); #expect(!s(false, 104)); #expect(s(false, 105))
     // not configured: never, and no attempt is counted
     #expect(!s(false, 200, configured: false)); #expect(!s(false, 300, configured: false))
+    // ...so the outage, which has gone on since 100, doesn't fire the moment it's configured again
+    #expect(!s(false, 301)); #expect(!s(false, 305)); #expect(s(false, 306))
+    #expect(!s(false, 310)); #expect(s(false, 316))   // the delay after one attempt is 10 s
     // a dark wake in the middle of an outage doesn't count as time down
     #expect(!s(true, 400)); #expect(!s(false, 410)); #expect(!s(false, 413, awake: false)); #expect(!s(false, 416))
     #expect(!s(false, 420)); #expect(s(false, 421))
+}
+
+@Test func hotspotGateWifiPoweredOff() {
+    var g = HotspotJoinGate(); let t0 = Date(timeIntervalSince1970: 0)
+    func s(_ t: TimeInterval, on: Bool = true) -> Bool {
+        g.step(wifiUp: false, holding: true, fullyAwake: true, configured: true, wifiOn: on, now: t0.addingTimeInterval(t))
+    }
+    #expect(!s(0)); #expect(s(5))
+    // switched off: never, no attempt counted, and the wait starts over once it's on again
+    #expect(!s(20, on: false)); #expect(!s(100, on: false))
+    #expect(!s(101)); #expect(!s(105)); #expect(s(106))
+    #expect(!s(110)); #expect(s(116))   // 10 s after one attempt, not 20 s after two
+}
+
+@Test func hotspotGateOtherPathUp() {
+    var g = HotspotJoinGate(); let t0 = Date(timeIntervalSince1970: 0)
+    func s(_ t: TimeInterval, otherUp: Bool = false) -> Bool {
+        g.step(wifiUp: false, holding: true, fullyAwake: true, configured: true, anyPathUp: otherUp, now: t0.addingTimeInterval(t))
+    }
+    #expect(!s(0)); #expect(!s(60, otherUp: true)); #expect(!s(600, otherUp: true))   // on Ethernet: never
+    #expect(!s(601)); #expect(s(606))   // Ethernet unplugged: the wait starts then
+}
+
+@Test func hotspotGatePostWakeQuiet() {
+    var g = HotspotJoinGate(); let t0 = Date(timeIntervalSince1970: 0)
+    func s(_ t: TimeInterval, quiet: Bool) -> Bool {
+        g.step(wifiUp: false, holding: true, fullyAwake: true, configured: true, afterWakeQuiet: quiet, now: t0.addingTimeInterval(t))
+    }
+    #expect(!s(0, quiet: false)); #expect(!s(6, quiet: false)); #expect(!s(59, quiet: false))
+    #expect(!s(60, quiet: true)); #expect(!s(64, quiet: true)); #expect(s(65, quiet: true))   // 5 s down counted from the quiet's end
 }

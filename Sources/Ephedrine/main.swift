@@ -121,6 +121,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     let location = LocationAccess()
     var hotspotJoining = false
     var hotspotNotified = false            // the unreadable-password notification went out this outage
+    var hotspotNotedOff = false            // the "Wi-Fi is switched off" line was logged this outage
     var hotspotNoted = false               // the "Location isn't allowed" line was logged this outage
     var hotspotPassword = HotspotPasswordState.ok
     // browser throttle warning (BrowserRelaunch.swift), main thread except browserQueue's ps runs
@@ -255,6 +256,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         logLine("Ephedrine started")
         networkWatch.onChange = { [weak self] ok in self?.networkChanged(ok) }
         networkWatch.start()
+        refreshHotspot()   // an unreadable password shows its warning now, not at the next outage
         refreshDisplaySleepIfStale()
         setupWindow.onClose = { [weak self] in self?.settings.setupDone = true }
         if settings.setupDone { fetchUsage() } else { openSetup() }

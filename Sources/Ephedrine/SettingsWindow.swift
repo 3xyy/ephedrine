@@ -40,6 +40,7 @@ final class SettingsUI: ObservableObject {
     @Published var cmuxPassword = ""          // typed in Claude Code › cmux, cleared once saved to the keychain
     @Published var hotspotSSID = ""           // typed in Lid › iPhone hotspot, filled from the saved name when the pane opens
     @Published var hotspotPassword = ""       // cleared once saved to the keychain
+    @Published var hotspotMessage = ""        // why the last Save did nothing
     @Published var tmuxTarget = ""            // typed in Claude Code › tmux panes, cleared once added
 }
 
@@ -72,7 +73,6 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         clock.stop()
         ui.cmuxPassword = ""   // a typed but unsaved password doesn't wait in memory for the next open
         ui.hotspotPassword = ""
-        ui.hotspotSSID = ""    // reloaded from the saved name when Lid opens again
     }
 }
 

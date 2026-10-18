@@ -27,8 +27,8 @@ enum CmuxKeychain {
     static let service = "ephedrine-cmux"
     static let account = "socket"
 
-    /// Never shows a dialog: an item macOS would ask about is skipped.
-    /// errSecItemNotFound is "none saved"; any other failure is `unreadable`.
+    /// Never shows a dialog (see Keychain.read). Nothing saved (or an empty
+    /// value) is `.none`; an item macOS would ask about, or any other failure, is `unreadable`.
     static func read() -> (password: String?, state: CmuxSavedPassword) {
         switch Keychain.read(service: service, account: account) {
         case .missing: return (nil, .none)
