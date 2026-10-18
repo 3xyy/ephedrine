@@ -1299,19 +1299,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let cause = fm.fileExists(atPath: lowPowerMarkerPath)
             ? (try? String(contentsOfFile: lowPowerMarkerPath, encoding: .utf8)).flatMap { LowPowerCause(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines)) }
             : nil
-        let cmuxState: CmuxRowState
-        if !cmuxSeen.installed { cmuxState = .notInstalled }
-        else if runningCmuxCLI() == nil { cmuxState = .notRunning }
-        else if case .unreadable = cmuxSeen.password { cmuxState = .unreadablePassword }
-        else if case .saved = cmuxSeen.password {
-            switch cmuxSeen.access {
-            case nil: cmuxState = .checking
-            case .ok?: cmuxState = .connected(cmuxSeen.panes)
-            case .badPassword?: cmuxState = .badPassword
-            case .needsPassword?: cmuxState = .noPassword
-            default: cmuxState = .failed   // denied, failed, gone
-            }
-        } else { cmuxState = .noPassword }
+        let cmuxState = cmuxRowState
         let ssid = hotspotName
         return FeatureSnapshot(
             lidSetup: lidSetupOK, lidHolding: marker, lidClosed: closed && externalDisplayActive(),

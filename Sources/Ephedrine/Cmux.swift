@@ -361,6 +361,21 @@ extension AppController {
         }
     }
 
+    /// The cmux row in the menu card; also puts the dot on Settings' Claude Code tab.
+    var cmuxRowState: CmuxRowState {
+        if !cmuxSeen.installed { return .notInstalled }
+        if runningCmuxCLI() == nil { return .notRunning }
+        if case .unreadable = cmuxSeen.password { return .unreadablePassword }
+        guard case .saved = cmuxSeen.password else { return .noPassword }
+        switch cmuxSeen.access {
+        case nil: return .checking
+        case .ok?: return .connected(cmuxSeen.panes)
+        case .badPassword?: return .badPassword
+        case .needsPassword?: return .noPassword
+        default: return .failed   // denied, failed, gone
+        }
+    }
+
     /// The cmux line in Settings › Claude Code.
     var cmuxStatus: String {
         cmuxStatusText(installed: cmuxSeen.installed, running: runningCmuxCLI() != nil,

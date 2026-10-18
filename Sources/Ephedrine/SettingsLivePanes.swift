@@ -11,34 +11,41 @@ struct NowPane: View {
     enum Stay: Hashable { case off, indefinite, running, custom, minutes(Int) }
 
     var body: some View {
-        Section {
-                Label(controller.statusText(), systemImage: "info.circle")
-                if let next = controller.nextText() { Label(next, systemImage: "arrow.forward.circle") }
-                if let lid = controller.lidStatusText() { Label(lid, systemImage: "laptopcomputer") }
-                if let battery = controller.batteryText() { Label(battery, systemImage: "battery.50") }
-            }
-        Section {
-                Button(controller.awayMode ? "I'm back, restore my apps" : "I'm leaving") { controller.toggleAway() }
-                Tip("Pauses other apps and turns the screen off. Claude keeps working, then the Mac sleeps a minute after it's done. Move the mouse, type or open the lid to come back.")
-            }
-        Section("Stay awake") {
-                Picker("Stay awake", selection: Binding(get: { stayChoice }, set: setStay)) {
-                    Text("Off").tag(Stay.off)
-                    Text("For 30 minutes").tag(Stay.minutes(30))
-                    Text("For 1 hour").tag(Stay.minutes(60))
-                    Text("For 2 hours").tag(Stay.minutes(120))
-                    Text("Custom…").tag(Stay.custom)
-                    Text("Until I turn it off").tag(Stay.indefinite)
-                    if let until = controller.keepAwakeUntil {
-                        Text("\(fmtDuration(Int(until.timeIntervalSinceNow))) left").tag(Stay.running)
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsBanner(symbol: SettingsPane.now.symbol, headline: controller.statusText(),
+                           sentence: [controller.nextText(), controller.lidStatusText(), controller.batteryText()]
+                               .compactMap { $0 }.joined(separator: "\n"),
+                           action: (title: controller.awayMode ? "I'm back" : "I'm leaving", handler: { controller.toggleAway() }))
+            SettingsColumns {
+                SettingsCard(symbol: "sun.max", title: "Stay awake") {
+                    SettingsRow("Keep it awake",
+                                subtitle: "Keeps the Mac and the screen awake no matter what, say for a long chat in the browser or the Claude app."
+                                    + (controller.lidSetupOK ? " The lid can be shut too." : "")) {
+                        Picker("Stay awake", selection: Binding(get: { stayChoice }, set: setStay)) {
+                            Text("Off").tag(Stay.off)
+                            Text("For 30 minutes").tag(Stay.minutes(30))
+                            Text("For 1 hour").tag(Stay.minutes(60))
+                            Text("For 2 hours").tag(Stay.minutes(120))
+                            Text("Custom…").tag(Stay.custom)
+                            Text("Until I turn it off").tag(Stay.indefinite)
+                            if let until = controller.keepAwakeUntil {
+                                Text("\(fmtDuration(Int(until.timeIntervalSinceNow))) left").tag(Stay.running)
+                            }
+                        }
+                        .pickerStyle(.menu)
                     }
                 }
-                Tip("Keeps the Mac and the screen awake no matter what, say for a long chat in the browser or the Claude app."
-                    + (controller.lidSetupOK ? " The lid can be shut too." : ""))
+            } right: {
+                SettingsCard(symbol: "checkmark.circle", title: "Claude") {
+                    SettingsRow("Claude is done, stop waiting for it",
+                                subtitle: "Use after cancelling Claude with Ctrl-C (which sends no signal), so the Mac doesn't stay awake waiting for it.") {
+                        Button("Stop waiting") { controller.resetIdle() }.buttonStyle(SettingsButtonStyle())
+                    }
+                }
+                SettingsCard(symbol: "figure.walk", title: "I'm leaving") {
+                    SettingsNote("Pauses other apps and turns the screen off. Claude keeps working, then the Mac sleeps a minute after it's done. Move the mouse, type or open the lid to come back.")
+                }
             }
-        Section {
-                Button("Claude is done, stop waiting for it") { controller.resetIdle() }
-                Tip("Use after cancelling Claude with Ctrl-C (which sends no signal), so the Mac doesn't stay awake waiting for it.")
         }
     }
 
