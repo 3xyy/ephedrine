@@ -75,7 +75,7 @@ Your Claude session and weekly limits show in the menu, with an alert at a level
 
 ### The menu
 
-The menu opens with a card that says what's keeping the Mac awake and what happens next. Under that are small chips for the lid, the watts going in or out, the battery and the Wi-Fi name. Below those it lists what Ephedrine is holding right now (apps paused, Docker paused, sound muted, Low Power Mode on, the length of the last network gap), then anything that needs you, like another app having turned sleep off or a browser that would slow down. While you're on battery it also shows the battery limit.
+The menu opens with a card that says what's keeping the Mac awake and what happens next. Under that are small chips for the watts going in or out, the battery and the Wi-Fi name. The rows underneath show what the lid, Low Power Mode, the lid-shut extras, cmux, the hotspot and the network are doing right now, plus what you can do about it. Below those it lists what Ephedrine is holding (apps paused, Docker paused, sound muted, Low Power Mode on, the length of the last network gap), then anything that needs you, like another app having turned sleep off or a browser that would slow down. Orange marks anything that needs you. While you're on battery it also shows the battery limit.
 
 The icon is a coffee cup with Claude's spark as the steam. In Settings you can have it match the menu bar, show an orange spark, or change color with the state.
 
@@ -100,7 +100,7 @@ To update, run `brew upgrade ephedrine`, then `ephedrine setup` again to swap in
 2. Go through the setup screen and click only the permissions you want. Nothing is requested until you click its button.
 3. Restart any Claude Code session that was already open, then start a task. The menu card says what is keeping the Mac awake.
 
-Lid-closed mode, the Terminal helpers and the usage meter are all optional and live in Settings.
+Lid-closed mode and the Terminal helpers are optional and live in Settings. The usage meter needs Keychain access to Claude Code's sign-in, and everything else works without it.
 
 ## Using it
 
@@ -163,19 +163,17 @@ One private API is involved: `SACLockScreenImmediate` (login.framework) locks th
 
 ## Advanced features
 
+<a id="pausing-apps"></a>
 <details>
 <summary>Pausing apps</summary>
-
-<a id="pausing-apps"></a>
 
 "I'm leaving" and the lid pause stop every regular app except the ones on the keep-running list. Pausing an app also pauses the helper processes it started (Electron apps have several), and they all come back together. The Away pane has an "Always pause" list for apps that should stop even if they'd normally be kept running. Any app that is hosting Claude Code, such as a terminal or an editor, is never paused. Docker Desktop is never paused by this rule either, only by the Docker option under [With the lid shut](#with-the-lid-shut).
 
 </details>
 
+<a id="with-the-lid-shut"></a>
 <details>
 <summary>With the lid shut (Low Power Mode, sound, keyboard light, Docker, browsers)</summary>
-
-<a id="with-the-lid-shut"></a>
 
 These happen while lid-closed mode keeps the Mac awake with the lid shut and no external display, whether for Claude or for Stay awake, and are undone when you open the lid or Ephedrine quits. A Remote Control check-in counts too: for its 2-minute window apps are paused and the sound is muted, if you have those on, and Low Power Mode and the Docker pause only start if the check-in turns into work. If the app crashes, a watchdog undoes what a shell can, and the next launch finishes the rest.
 
@@ -200,10 +198,9 @@ Settings shows the command with your pane filled in. Panes that are dead, in cop
 
 </details>
 
+<a id="cmux"></a>
 <details>
 <summary>cmux</summary>
-
-<a id="cmux"></a>
 
 cmux is on the keep-running list, so it keeps going while you're away. For the Terminal helpers to work there too (typing `continue`, waiting out a usage limit, noticing Claude is busy), set cmux's Automation setting to Password mode, then type that password in Settings, Claude Code, cmux. Ephedrine keeps it in your keychain and hands it to cmux's command line through an environment variable. Until then Settings says "Not connected" and only Terminal.app is used. It only types into an empty Claude Code prompt or its limit menu, the same as in Terminal.
 
@@ -227,7 +224,7 @@ macOS slows down apps it thinks you aren't looking at. If you turn on "Never let
 
 ### The icon still looks old after an upgrade
 
-Run `killall Dock`. macOS caches the app icon.
+If the old icon still shows after an upgrade, macOS is showing a cached copy. Run `killall Dock`.
 
 ### macOS asked for permissions again after an upgrade
 
@@ -267,7 +264,7 @@ swift test                # needs full Xcode for the Testing framework
 
 The decision logic (hook markers, terminal text parsing, lid-closed rules, usage parsing, settings) lives in `Sources/EphedrineCore` and has unit tests. `Sources/Ephedrine` is the app around it.
 
-To stop macOS re-asking for permissions after every rebuild, create a self-signed code-signing certificate called "Ephedrine Dev" in Keychain Access (Certificate Assistant → Create a Certificate). The build scripts use it automatically, or set `CODESIGN_IDENTITY` to another one.
+To stop macOS re-asking for permissions after every rebuild, create a self-signed code-signing certificate called "Ephedrine Dev" in Keychain Access (Certificate Assistant → Create a Certificate). The build scripts use it automatically, or set `CODESIGN_IDENTITY` to another one. `scripts/build.sh` also refreshes LaunchServices on every build, so Finder and the Dock pick up a changed icon.
 
 To try the lid features with the lid open, build the simulation variant with `LID_SIMULATION=1 scripts/build.sh`. It reads `~/.claude/ephedrine/simulate-lid` instead of the lid sensor, and the file says `closed` or `open`. With no file it uses the real lid. The menu shows "Lid simulation build" so you can't mistake it for the normal app. The normal build never reads that file.
 
