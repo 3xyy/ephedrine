@@ -117,7 +117,7 @@ extension AppController {
 
     /// Still the same hold, still on, and nothing else owns the paused list.
     private func dockerRuleStillWanted(_ generation: Int) -> Bool {
-        generation == lidHoldGeneration && lidHoldActive && lidShutHold(closed: lidIsClosed())
+        generation == lidHoldGeneration && lidHoldActive && lidShutHold(closed: lidClosedNow())
             && settings.lidDockerRule && !awayMode && !dockerPaused
     }
 

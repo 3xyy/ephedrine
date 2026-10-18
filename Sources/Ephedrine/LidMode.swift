@@ -34,6 +34,18 @@ private func rootDomainBool(_ key: String) -> Bool? {
 }
 
 func lidIsClosed() -> Bool { rootDomainBool("AppleClamshellState") ?? false }
+
+/// Every lid decision reads this. A normal build is the sensor. The simulation
+/// build (`LID_SIMULATION=1 scripts/build.sh`) lets `~/.claude/ephedrine/simulate-lid`
+/// ("closed" or "open") stand in for it, so the lid features can be tried with the lid up.
+func lidClosedNow() -> Bool {
+    #if LID_SIMULATION
+    let text = try? String(contentsOfFile: "\(home)/.claude/ephedrine/simulate-lid", encoding: .utf8)
+    return simulatedLid(text) ?? lidIsClosed()
+    #else
+    return lidIsClosed()
+    #endif
+}
 func sleepIsDisabled() -> Bool { rootDomainBool("SleepDisabled") ?? false }
 
 /// The kernel's current system capabilities (CPU 0x1, graphics 0x2, audio 0x4,
@@ -259,7 +271,7 @@ extension AppController {
     /// Called from evaluate() every tick. `battery`: the percent after
     /// BatteryReadMisses, so a battery that can't be read stops it too.
     func updateLidMode(claudeBusy: Bool, battery: Int?) {
-        let closed = lidIsClosed()
+        let closed = lidClosedNow()
         let thermal = ProcessInfo.processInfo.thermalState
         var inputs = LidInputs(
             whileClaude: settings.lidWhileClaude, claudeBusy: claudeBusy, lidClosed: closed,
@@ -450,7 +462,7 @@ extension AppController {
                     logLine("lid-closed mode OFF")
                     // Nobody can be using a Mac with its lid shut and no external
                     // display, so sleep now instead of running the idle countdown.
-                    if lidIsClosed() && !externalDisplayActive() {
+                    if lidClosedNow() && !externalDisplayActive() {
                         logLine("lid is shut, sleeping now")
                         self.doSleep()
                     }
@@ -557,7 +569,7 @@ extension AppController {
         // sleeps. The hold ends here, not on a next tick that may never come
         // before sleep: a check-in on the first DarkWake tick would find the
         // hold already true again, so no new start would mute.
-        if lidHoldActive { endLidHold(closed: lidIsClosed()) } else { restoreLidExtras() }
+        if lidHoldActive { endLidHold(closed: lidClosedNow()) } else { restoreLidExtras() }
         // No sleepIsDisabled() shortcut: an "on" may still be in flight on lidSwitch.
         guard fm.fileExists(atPath: lidMarkerPath) else { return }
         lidFlipGeneration += 1   // supersedes any flip still finishing
@@ -604,7 +616,7 @@ extension AppController {
             logLine("Low Power Mode: turned off by hand, no longer Ephedrine's")
             return
         }
-        let found = lowPowerCause(holding: holding, lidHold: lidShutHold(closed: lidIsClosed()),
+        let found = lowPowerCause(holding: holding, lidHold: lidShutHold(closed: lidClosedNow()),
                                   onLidShut: settings.lowPowerOnLidShut, onBattery: !onACPower(), percent: percent,
                                   floor: settings.lowPowerFloor, thermal: ProcessInfo.processInfo.thermalState)
         // Heat and battery are held 5 min while ours, and while the owner has

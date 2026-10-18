@@ -1,6 +1,9 @@
 #!/bin/bash
 # Development: rebuild Ephedrine.app into ~/Applications and relaunch it.
 # (First time? Run `scripts/ephedrine setup` instead, since it also installs the Claude Code hooks.)
+# LID_SIMULATION=1 scripts/build.sh builds the variant that reads
+# ~/.claude/ephedrine/simulate-lid ("closed" or "open") instead of the lid sensor.
+# (bundle.sh does the build and passes -Xswiftc -DLID_SIMULATION.)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

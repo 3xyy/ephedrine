@@ -4,15 +4,22 @@
 # Signing: $CODESIGN_IDENTITY if set ("-" = ad-hoc), else a code-signing
 # identity named "Ephedrine Dev" if you have one, else ad-hoc. A stable identity
 # keeps macOS permissions (Automation, Notifications) across rebuilds.
+# LID_SIMULATION=1 builds the test variant that reads ~/.claude/ephedrine/simulate-lid
+# ("closed" or "open") in place of the lid sensor, and says so in the menu.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:?usage: bundle.sh <out-dir>}"
 APP="$OUT/Ephedrine.app"
 
+EXTRA=()
+if [ "${LID_SIMULATION:-}" = "1" ]; then
+    EXTRA=(-Xswiftc -DLID_SIMULATION)
+    echo "› Lid simulation build"
+fi
 echo "› Building (swift build -c release)…"
 # --disable-sandbox: SwiftPM's own sandbox can't nest inside Homebrew's.
-swift build -c release --disable-sandbox --package-path "$ROOT"
+swift build -c release --disable-sandbox --package-path "$ROOT" ${EXTRA[@]+"${EXTRA[@]}"}
 BIN="$(swift build -c release --disable-sandbox --package-path "$ROOT" --show-bin-path)/Ephedrine"
 
 echo "› Assembling $APP"

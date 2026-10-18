@@ -23,9 +23,33 @@ func logLine(_ msg: String) {
         if let fh = FileHandle(forWritingAtPath: logPath) {
             fh.seekToEndOfFile(); fh.write(data); try? fh.close()
         } else {
-            try? line.write(toFile: logPath, atomically: true, encoding: .utf8)
+            // Created owner-only: the log names networks and processes.
+            fm.createFile(atPath: logPath, contents: data, attributes: [.posixPermissions: 0o600])
         }
     }
+}
+
+/// Makes `~/.claude/ephedrine` and everything in it owner-only. Never loosens a
+/// mode, never follows a symlink (a link is skipped, not chmod'd through), and
+/// ignores anything that vanishes or can't be changed. A file the owner can
+/// run (hook.sh) keeps that bit.
+func tightenStateFolder() {
+    let root = "\(home)/.claude/ephedrine"
+    func tighten(_ path: String) {
+        var st = stat()
+        guard lstat(path, &st) == 0 else { return }
+        let type = st.st_mode & S_IFMT
+        guard type == S_IFDIR || type == S_IFREG else { return }   // symlinks, sockets and the rest are left alone
+        let isDir = type == S_IFDIR
+        if var mode = tightenedMode(current: UInt16(st.st_mode & 0o7777), isDirectory: isDir) {
+            if !isDir && st.st_mode & 0o100 != 0 { mode |= 0o100 }
+            if chmod(path, mode_t(mode)) != 0 { logLine("couldn't make \(path) owner-only (errno \(errno))") }
+        }
+        if isDir, let names = try? fm.contentsOfDirectory(atPath: path) {
+            for n in names { tighten("\(path)/\(n)") }
+        }
+    }
+    tighten(root)
 }
 
 /// Block until queued log lines are written (call before exiting).

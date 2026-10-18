@@ -205,6 +205,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
     func applicationDidFinishLaunching(_ note: Notification) {
         try? fm.createDirectory(atPath: stateDir, withIntermediateDirectories: true)
+        tightenStateFolder()
         settings.onChange = { [weak self] key in self?.settingChanged(key) }
         installMainMenu()
         recoverFromInterruptedAway()
@@ -212,7 +213,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         // in use (lid open, or a desk setup). With the lid shut and nothing
         // attached, the hold or the lid opening restores them; the watchdog
         // covers a crash till then.
-        if !lidIsClosed() || externalDisplayActive() { restoreLidExtras() }
+        if !lidClosedNow() || externalDisplayActive() { restoreLidExtras() }
         updateWatchdog()
         if settings.appNapOffForAgents { applyAppNapOverride() } else { restoreAppNapOverride() }   // the restore finishes one a crash cut short
         // `pkill`/`kill` (build.sh, logout scripts) → a normal quit, so
@@ -431,7 +432,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         // Never during the hold, and only while the Mac can be in use.
         if !lidHoldActive && Date().timeIntervalSince(lastExtrasRetry) >= 30
             && (mutedOutputsPending() || fm.fileExists(atPath: keyboardBacklightPath))
-            && (!lidIsClosed() || externalDisplayActive()) {
+            && (!lidClosedNow() || externalDisplayActive()) {
             lastExtrasRetry = Date()
             restoreLidExtras()
         }
@@ -451,7 +452,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             // has already blacked it out, so let it sleep and save the power.
             // With the lid shut the screen is dark anyway, but holding the display
             // awake kept it powered (2026-10-12: on for 9 minutes after the lid shut).
-            let lidShutAlone = lidIsClosed() && !externalDisplayActive()
+            let lidShutAlone = lidClosedNow() && !externalDisplayActive()
             let displayOff = awayMode || lidShutAlone || (settings.allowDisplaySleep && !busy && !manualActive && !claudeWorkingNow
                 && (extraActive || limitWaitNow))
             if awake.apply(system: true, display: !displayOff) {
@@ -461,7 +462,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             if awake.apply(system: false, display: false) { logLine("keep-awake OFF") }
         }
         updateLowPower(holding: keepAwake, percent: charge)
-        hotspotTick(holding: keepAwake || lidShutHold(closed: lidIsClosed()))
+        hotspotTick(holding: keepAwake || lidShutHold(closed: lidClosedNow()))
 
         // "I'm leaving": sleep once Claude (not a detector) has been done for a
         // minute. It used to hold the Mac awake until you came back, which on
@@ -846,7 +847,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let now = Date()
         defer { lastAwayCheck = now }
         if awayEndsOnWake(sinceLastCheck: now.timeIntervalSince(lastAwayCheck),
-                          fullyAwake: systemFullyAwake(fallback: !systemSleeping), lidClosed: lidIsClosed()) {
+                          fullyAwake: systemFullyAwake(fallback: !systemSleeping), lidClosed: lidClosedNow()) {
             lastAwayReturnByInput = now
             exitAway("woke up with the lid open")
             return
@@ -1238,6 +1239,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     /// Plain warning lines for the status card (no "⚠"; the card draws the triangle).
     func menuWarnings() -> [String] {
         var out: [String] = []
+        #if LID_SIMULATION
+        out.append("Lid simulation build")
+        #endif
         if lidActive && !fm.fileExists(atPath: lidMarkerPath) { out.append("Sleep is disabled by pmset, not by Ephedrine") }
         if lowPowerOffFailures >= 2 && fm.fileExists(atPath: lowPowerMarkerPath) {
             out.append("Low Power Mode is stuck on. Re-run lid setup, or turn it off in System Settings, Battery.")
@@ -1258,7 +1262,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
     /// Everything the status card shows. Watts and Wi-Fi are read here, when the menu opens, never on a timer.
     func menuStatus() -> MenuStatus {
-        let lid: LidChip = lidIsClosed() ? .shut : (lidActive && fm.fileExists(atPath: lidMarkerPath) ? .canClose : .none)
+        let lid: LidChip = lidClosedNow() ? .shut : (lidActive && fm.fileExists(atPath: lidMarkerPath) ? .canClose : .none)
         let chips = StatusLines.chips(lid: lid, watts: instantWatts(), batteryPercent: batteryPercent(),
                                       charging: isCharging(), wifi: wifiStatusName())
         var notes: [String] = []
