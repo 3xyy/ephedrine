@@ -37,6 +37,7 @@ final class SettingsUI: ObservableObject {
     @Published var pane: SettingsPane? = .now
     @Published var loginChanged = 0           // bumped after a toggle so it redraws right away
     @Published var notifications = "Checking…"
+    @Published var cmuxPassword = ""          // typed in Claude Code › cmux, cleared once saved to the keychain
 }
 
 /// One window, created on first use and reused.
@@ -106,7 +107,7 @@ struct SettingsView: View {
         switch p {
         case .general: GeneralPane(settings: settings, controller: controller, ui: ui, now: now)
         case .sleep: SleepPane(settings: settings, controller: controller)
-        case .claude: ClaudePane(settings: settings)
+        case .claude: ClaudePane(settings: settings, controller: controller, ui: ui, now: now)
         case .now: NowPane(controller: controller, now: now)
         case .lid: LidPane(settings: settings, controller: controller, now: now)
         case .away: AwayPane(settings: settings)
@@ -221,28 +222,48 @@ struct SleepPane: View {
 
 struct ClaudePane: View {
     @ObservedObject var settings: AppSettings
+    let controller: AppController
+    @ObservedObject var ui: SettingsUI
+    let now: Date   // re-renders each second, so the cmux line follows cmux opening and quitting
 
     var body: some View {
-        Section("Retry after API errors") {
-            Picker("Retry", selection: $settings.autoContinueMode) {
-                ForEach(AutoContinueMode.allCases, id: \.self) { Text($0.label).tag($0) }
+        Group {
+            Section("Retry after API errors") {
+                Picker("Retry", selection: $settings.autoContinueMode) {
+                    ForEach(AutoContinueMode.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
+                Tip(settings.autoContinueMode.tip + " Types “continue” only when Claude Code's own screen is showing, so a plain shell is never typed into. Terminal.app, and cmux once connected.")
             }
-            .pickerStyle(.radioGroup)
-            .labelsHidden()
-            Tip(settings.autoContinueMode.tip + " Types “continue” only when Claude Code's own screen is showing, so a plain shell is never typed into. Terminal.app only.")
-        }
-        Section {
-            Toggle(isOn: $settings.autoResumeLimit) {
-                Text("Continue after a usage limit resets")
-                Tip("When Claude Code hits a limit that resets within 6 hours: choose its “wait” option (never upgrade or paid credits), keep the Mac awake, and continue once it resets. On battery it only stays awake for the last hour before the reset. Weekly waits are left alone.")
+            Section("cmux") {
+                LabeledContent("Status", value: controller.cmuxStatus)
+                HStack {
+                    SecureField("Socket password", text: $ui.cmuxPassword)
+                        .onSubmit { if !ui.cmuxPassword.isEmpty { saveCmuxPassword() } }   // only Save removes one
+                    Button("Save", action: saveCmuxPassword)
+                }
+                Tip("Lets Ephedrine read cmux's panes and type there with the same rules as in Terminal. Use the password you set in cmux. It's kept in your keychain. Saving an empty field removes it.")
+            }
+            Section {
+                Toggle(isOn: $settings.autoResumeLimit) {
+                    Text("Continue after a usage limit resets")
+                    Tip("When Claude Code hits a limit that resets within 6 hours: choose its “wait” option (never upgrade or paid credits), keep the Mac awake, and continue once it resets. On battery it only stays awake for the last hour before the reset. Weekly waits are left alone.")
+                }
+            }
+            Section {
+                Picker("Usage alert", selection: $settings.usageAlert) {
+                    Text("Off").tag(0)
+                    ForEach([70, 80, 90, 95], id: \.self) { Text("At \($0)%").tag($0) }
+                }
+                Tip("Get a notification when any limit (session, weekly, or per-model) reaches this level.")
             }
         }
-        Section {
-            Picker("Usage alert", selection: $settings.usageAlert) {
-                Text("Off").tag(0)
-                ForEach([70, 80, 90, 95], id: \.self) { Text("At \($0)%").tag($0) }
-            }
-            Tip("Get a notification when any limit (session, weekly, or per-model) reaches this level.")
-        }
+        .task { controller.refreshCmux() }
+    }
+
+    private func saveCmuxPassword() {
+        controller.refreshCmux(newPassword: ui.cmuxPassword)
+        ui.cmuxPassword = ""
     }
 }
