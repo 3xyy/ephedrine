@@ -1315,7 +1315,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let ssid = hotspotName
         return FeatureSnapshot(
             lidSetup: lidSetupOK, lidHolding: marker, lidClosed: closed && externalDisplayActive(),
-            claudeWorking: settings.keepAwakeClaudeWorking && claudeWorkingCached, stayAwake: manualKeepAwake || keepAwakeUntil != nil,
+            claudeWorking: activeSessionCount() > 0 || (settings.keepAwakeClaudeWorking && claudeWorkingCached), stayAwake: manualKeepAwake || keepAwakeUntil != nil,
             lowPowerNeedsRerun: lowPowerSetupNeeded, lowPowerOn: cause,
             lowPowerOnLidShut: settings.lowPowerOnLidShut, lowPowerFloor: settings.lowPowerFloor,
             muteOnShut: settings.lidMute, keyboardOffOnShut: settings.lidKeyboardOff,
