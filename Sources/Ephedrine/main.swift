@@ -1529,7 +1529,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             if !on { retryPending = false }
             continueQueue.async { [weak self] in
                 self?.continueStates.removeAll()
-                if on { _ = terminalTabsSnapshot() }   // trigger the "control Terminal" permission prompt now
+                if on { _ = terminalTabsSnapshot() }   // the "control Terminal" prompt, now if Terminal is open (else on a scan once it is)
             }
             logLine("auto-continue set to \(settings.autoContinueMode.rawValue)")
         case "autoResumeLimit":

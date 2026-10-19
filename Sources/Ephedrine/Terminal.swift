@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import EphedrineCore
 
 // ── Reading & typing into Terminal.app (auto-continue / limit-resume) ──
@@ -26,8 +26,20 @@ typealias ScanTab = (source: TabSource, key: String, text: String)
 /// with ASCII unit/record separators (chars 31/30): control characters can't
 /// appear in a tab's visible contents, so the delimiters can't collide with
 /// on-screen text (unlike a printable marker string).
+/// Never while Terminal is closed: the read would launch it (readTerminalIfRunning).
+/// The script checks again, for a quit landing while osascript starts.
 func terminalTabsSnapshot() -> (tabs: [ScanTab], err: String) {
+    readTerminalIfRunning(terminalRunning(), readTerminalTabs)
+}
+
+/// (NSRunningApplication is thread safe, so any queue may ask.)
+func terminalRunning() -> Bool {
+    NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Terminal").contains { !$0.isTerminated }
+}
+
+private func readTerminalTabs() -> (tabs: [ScanTab], err: String) {
     let script = """
+    if not (application "Terminal" is running) then error "Terminal isn't running" number -600
     set d to character id 31
     set c to character id 30
     set out to ""

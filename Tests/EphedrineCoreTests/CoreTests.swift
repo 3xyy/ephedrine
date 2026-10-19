@@ -1189,6 +1189,17 @@ private func freshDefaults() -> UserDefaults {
     #expect(terminalControlStatus(tabs: 0, error: "execution error: Not authorized to send Apple events to Terminal. (-1743)").hasPrefix("Not allowed"))
 }
 
+// 2026-10-18: Terminal kept reopening after the owner quit it. The scan every
+// 9s sent it an Apple event, and an Apple event launches an app that isn't running.
+@Test func terminalNotReadWhenNotRunning() {
+    var read = false
+    let r = readTerminalIfRunning(false) { () -> (tabs: [Int], err: String) in read = true; return ([1], "") }
+    #expect(!read)
+    #expect(r.tabs.isEmpty)
+    #expect(terminalControlStatus(tabs: 0, error: r.err) == "OK, Terminal isn't open")
+    #expect(readTerminalIfRunning(true) { () -> (tabs: [Int], err: String) in ([1, 2], "") }.tabs == [1, 2])
+}
+
 // ── "I'm leaving" ──
 
 @Test func awayReturnsWhenCursorNeverStops() {

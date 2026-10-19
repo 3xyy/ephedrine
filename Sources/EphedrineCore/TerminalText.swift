@@ -224,6 +224,16 @@ public func statusLinesAbovePrompt(_ text: String, count: Int = 3) -> [String] {
     return above.suffix(count).map { String($0.prefix(100)) }
 }
 
+/// The read's error when Terminal isn't running, worded like osascript's.
+public let terminalNotRunningError = "Terminal isn't running (-600)"
+
+/// Read Terminal only while it runs: any Apple event to Terminal launches it,
+/// so the scan every 9s reopened Terminal seconds after the owner quit it.
+public func readTerminalIfRunning<T>(_ running: Bool, _ read: () -> (tabs: [T], err: String)) -> (tabs: [T], err: String) {
+    guard running else { return ([], terminalNotRunningError) }
+    return read()
+}
+
 /// Settings → About wording for the last Terminal read. `tabs` -1 = no scan
 /// yet; `error` is osascript's stderr (-1743 = Automation not allowed,
 /// -600 = Terminal not running).
