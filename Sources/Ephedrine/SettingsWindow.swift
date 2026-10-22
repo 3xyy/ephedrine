@@ -3,7 +3,7 @@ import ServiceManagement
 import EphedrineCore
 
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case now, general, sleep, lid, claude, away, about
+    case now, general, sleep, lid, claude, away, shortcuts, about
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -13,6 +13,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .lid: return "Lid closed"
         case .claude: return "Claude Code"
         case .away: return "Away"
+        case .shortcuts: return "Shortcuts"
         case .about: return "About"
         }
     }
@@ -24,6 +25,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         case .lid: return "laptopcomputer"
         case .claude: return "terminal"
         case .away: return "figure.walk"
+        case .shortcuts: return "keyboard"
         case .about: return "info.circle"
         }
     }
@@ -152,6 +154,7 @@ struct SettingsView: View {
         case .now: NowPane(controller: controller, now: now)
         case .lid: LidPane(settings: settings, controller: controller, ui: ui, now: now)
         case .away: AwayPane(settings: settings, controller: controller)
+        case .shortcuts: ShortcutsPane(settings: settings, controller: controller, now: now)
         case .about: AboutPane(settings: settings, controller: controller, ui: ui, now: now)
         }
     }

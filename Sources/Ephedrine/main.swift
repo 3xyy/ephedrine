@@ -215,6 +215,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var lastUsageFetch: Date?
     var usageView: UsageView?
     let settingsWindow = SettingsWindowController()
+    let hotkeys = HotkeyCenter()                     // global shortcuts (Settings › Shortcuts)
     let setupWindow = SetupWindowController()
     var iconActive = false                          // last `active` refreshIcon saw (the status card picks its glyph from it)
     var awakeIcons: [MenuBarIconStyle: NSImage] = [:]   // made once per style; refreshIcon runs every tick
@@ -229,6 +230,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         try? fm.createDirectory(atPath: stateDir, withIntermediateDirectories: true)
         tightenStateFolder()
         settings.onChange = { [weak self] key in self?.settingChanged(key) }
+        hotkeys.onPress = { [weak self] in self?.shortcutPressed($0) }
+        hotkeys.apply(settings.shortcuts)
         installMainMenu()
         recoverFromInterruptedAway()
         // A mute or a dark keyboard a crash left behind, while the Mac can be
@@ -1599,6 +1602,37 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     }
 
     @objc func toggleEnabled() { settings.enabled.toggle() }
+
+    /// A global shortcut was pressed. Actions with nothing to see on screen say what they did.
+    func shortcutPressed(_ a: ShortcutAction) {
+        logLine("shortcut: \(a.rawValue)")
+        switch a {
+        case .openMenu:
+            statusItem.button?.performClick(nil)
+        case .leaving:
+            toggleAway()
+        case .stayAwake:
+            if manualKeepAwake || keepAwakeUntil != nil {
+                stopStayAwake()
+                shortcutNotify("Stay awake is off", "The Mac sleeps the usual way again.")
+            } else {
+                stayAwakeIndefinitely()
+                shortcutNotify("Staying awake", "Until you turn it off" + (lidSetupOK ? ", lid shut or not." : "."))
+            }
+        case .keepAwake:
+            toggleEnabled()
+            shortcutNotify(settings.enabled ? "Keeping awake for Claude" : "Not keeping awake for Claude",
+                           settings.enabled ? "The Mac stays awake while Claude works." : "macOS sleeps as usual. Stay awake and I'm leaving still work.")
+        case .settings:
+            openSettings()
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    private func shortcutNotify(_ t: String, _ b: String) {
+        let c = UNMutableNotificationContent(); c.title = t; c.body = b
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ka_shortcut", content: c, trigger: nil))
+    }
     /// Stay awake also keeps it awake with the lid shut once lid setup is done
     /// (one control instead of separate lid-closed sessions).
     func stayAwakeIndefinitely() {
@@ -1661,6 +1695,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     /// Every settings change (menu or window) lands here, then re-evaluates.
     func settingChanged(_ key: String) {
         switch key {
+        case "shortcuts":
+            hotkeys.apply(settings.shortcuts)
         case "enabled":
             if !settings.enabled { awake.apply(system: false, display: false); armed = false; cancelPendingSleep() }
         case "autoContinueMode":

@@ -26,6 +26,10 @@ public final class AppSettings: ObservableObject {
     @Published public var batteryFloor: Int { didSet { save(batteryFloor, "lidBatteryFloor") } }
     /// At the battery limit, pause Claude Code once the owner is away and sleep the Mac (BatteryPause).
     @Published public var batteryPauseClaude: Bool { didSet { save(batteryPauseClaude, "batteryPauseClaude") } }
+    /// Global keyboard shortcuts (Settings › Shortcuts), saved as JSON.
+    @Published public var shortcuts: ShortcutBindings {
+        didSet { if let d = try? JSONEncoder().encode(shortcuts) { save(d, "shortcuts") } }
+    }
     @Published public var lidPauseApps: Bool { didSet { save(lidPauseApps, "lidPauseApps") } }
     @Published public var lidLockOnClose: Bool { didSet { save(lidLockOnClose, "lidLockOnClose") } }
     @Published public var lidHeatLimit: LidHeatLimit { didSet { save(lidHeatLimit.rawValue, "lidHeatLimit") } }
@@ -86,6 +90,8 @@ public final class AppSettings: ObservableObject {
         batteryFloor = floor
         if floor < minBatteryFloor { defaults.set(minBatteryFloor, forKey: "lidBatteryFloor"); batteryFloor = minBatteryFloor }   // "No limit" is gone
         batteryPauseClaude = bool("batteryPauseClaude", true)
+        shortcuts = defaults.data(forKey: "shortcuts").flatMap { try? JSONDecoder().decode(ShortcutBindings.self, from: $0) }
+            ?? ShortcutBindings()
         lidPauseApps = bool("lidPauseApps", true)
         lidLockOnClose = bool("lidLockOnClose", true)
         lidHeatLimit = defaults.string(forKey: "lidHeatLimit").flatMap(LidHeatLimit.init(rawValue:)) ?? .hot

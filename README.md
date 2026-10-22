@@ -80,6 +80,10 @@ The menu opens with a card that says what's keeping the Mac awake and what happe
 
 The icon is a coffee cup with Claude's spark as the steam. In Settings you can have it match the menu bar, show an orange spark, or change color with the state.
 
+### Keyboard shortcuts
+
+Shortcuts work from any app. ⌃⌥⌘E opens the menu and ⌃⌥⌘L is "I'm leaving" (press it again for "I'm back"). You can also give a shortcut to Stay awake (until you turn it off, or off again), to turning keep-awake for Claude on or off, and to Settings. Change or clear any of them in Settings, Shortcuts. A shortcut needs two of ⌃ ⌥ ⌘ (or an F key on its own) so it never takes a key other apps use, and if another app already has one, Settings says so. No extra permission is needed.
+
 ## Install
 
 ```sh
@@ -105,7 +109,7 @@ Lid-closed mode and the Terminal helpers are optional and live in Settings. The 
 
 ## Using it
 
-Open the menu from the menu bar icon. Open Settings with ⌘, from the menu.
+Open the menu from the menu bar icon or with ⌃⌥⌘E. Open Settings with ⌘, from the menu.
 
 | Pane | What's there |
 |---|---|
@@ -115,6 +119,7 @@ Open the menu from the menu bar icon. Open Settings with ⌘, from the menu.
 | Lid closed | Lid-closed mode, Remote Control check-ins, the screen lock, pausing apps, mute, keyboard light, Docker, Low Power Mode, the browser warning, the iPhone hotspot, and when to sleep anyway: heat, and how long the lid can stay shut |
 | Claude Code | Retry after API errors, continue after a usage limit resets, continue after a network outage (tmux), cmux, usage alerts |
 | Away | Apps "I'm leaving" never pauses, and apps it always pauses. Terminals, code editors, browsers, Xcode, Simulator, call apps and password managers are already on the first list |
+| Shortcuts | The keyboard shortcuts: record a new one, clear one, or reset them all |
 
 The heat setting uses macOS's thermal pressure level (Warm, Hot, Very hot) because apps can't read a temperature in degrees. The pane shows the current level.
 
