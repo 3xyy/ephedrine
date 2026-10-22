@@ -71,13 +71,16 @@ private func isAPIErrorLine(_ line: String) -> Bool {
 }
 
 /// Same rules as claudeErrorVisible, but says which one blocked the answer.
-public func claudeErrorStatus(_ text: String) -> ClaudeErrorStatus {
+/// `sleepWasOurs`: Ephedrine paused Claude and slept the Mac at the battery
+/// limit (BatteryPause) and has just resumed it, so a "went to sleep" error is
+/// its doing and gets a "continue" like any other.
+public func claudeErrorStatus(_ text: String, sleepWasOurs: Bool = false) -> ClaudeErrorStatus {
     // The whole visible screen (a Terminal tab is rarely taller than 60 rows):
     // panels, notices or a recap below the error must not push it out of view.
     let lines = tail(text, 60).lowercased().split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
     guard let i = lines.lastIndex(where: isAPIErrorLine) else { return .none }
     let below = "; below it: " + lineShapes(Array(lines[(i + 1)...]))
-    if lines[i].contains("went to sleep") { return .skipped("“went to sleep” message, not an outage") }
+    if lines[i].contains("went to sleep") && !sleepWasOurs { return .skipped("“went to sleep” message, not an outage") }
     if let p = lines[(i + 1)...].first(where: isPromptWithText) {
         return .skipped("already answered: \(p.trimmingCharacters(in: .whitespaces).prefix(60))" + below)
     }

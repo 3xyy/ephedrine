@@ -289,13 +289,18 @@ struct SleepPane: View {
             } right: {
                 SettingsCard(symbol: "battery.50", title: "On battery") {
                     SettingsRow("Keep it awake",
-                                subtitle: "Covers everything Ephedrine keeps awake for: Claude, “I'm leaving”, Stay awake and the lid. At the limit it lets the Mac sleep until you plug it in, so the battery never runs flat. Above it, usage-limit waits and “Also keep awake while…” get an hour at most on battery.") {
+                                subtitle: "Covers everything Ephedrine keeps awake for: Claude, “I'm leaving”, Stay awake and the lid. At the limit it lets the Mac sleep until you plug it in, so the battery never runs flat. Above it, “Also keep awake while…” gets an hour at most on battery, and so does a usage-limit wait while the lid is open. Close the lid while you're at the Mac and the wait is held until the reset.") {
                         Picker("Keep it awake", selection: $settings.batteryFloor) {
                             ForEach([30, 20, 10], id: \.self) { Text("Down to \($0)%").tag($0) }
                             Text("Only on the charger").tag(lidOnlyPluggedIn)
                         }
                         .pickerStyle(.menu)
                     }
+                    SettingsRow("Pause Claude at the limit when you're away",
+                                subtitle: "Claude Code keeps the Mac awake by itself, so at the limit Ephedrine pauses it once you're away (the lid shut, or no input for the sleep countdown's time, after a 10-second heads-up) and puts the Mac to sleep. It picks up where it was when you plug in or come back. While you're at the Mac you get a notification instead.") {
+                        Toggle("Pause Claude at the limit when you're away", isOn: $settings.batteryPauseClaude).toggleStyle(ClayToggleStyle())
+                    }
+                    .disabled(settings.batteryFloor >= lidOnlyPluggedIn)
                     SettingsRow("Low Power Mode below",
                                 subtitle: "While Ephedrine keeps the Mac awake on battery, it turns Low Power Mode on below this level or when the Mac runs hot, and off again once that's over. If you turned it on yourself, it stays on. Needs lid-closed setup.") {
                         Picker("Low Power Mode below", selection: $settings.lowPowerFloor) {

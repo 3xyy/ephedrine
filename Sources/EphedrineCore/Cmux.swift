@@ -83,6 +83,7 @@ public enum CmuxTypeDecision: Equatable { case send, force, skip(String) }
 /// (cmuxLiveTailShows) right before typing.
 public enum CmuxLiveTrigger: Equatable {
     case apiError                 // "continue" for an unanswered API error
+    case apiErrorAfterOurSleep    // the same, "went to sleep" included: a battery pause slept the Mac
     case limitMenu(LimitChoice)   // this "wait" option of Claude Code's usage-limit menu
     case limitReset               // "continue" at a plain prompt once a usage limit has reset
 
@@ -93,7 +94,7 @@ public enum CmuxLiveTrigger: Equatable {
     /// The log's reason when the live tail doesn't show it.
     public var missing: String {
         switch self {
-        case .apiError: return "the live screen doesn't show an unanswered API error"
+        case .apiError, .apiErrorAfterOurSleep: return "the live screen doesn't show an unanswered API error"
         case .limitMenu: return "menu on screen isn't the usage-limit menu"
         case .limitReset: return "the live screen isn't the usage limit at a plain prompt"
         }
@@ -122,8 +123,8 @@ public func cmuxLiveTailShows(_ trigger: CmuxLiveTrigger, in tail: String) -> Bo
     let text = lines.joined(separator: "\n")
     let menuOpen = lines.suffix(20).contains { liveOption($0)?.cursor == true }
     switch trigger {
-    case .apiError:
-        return !menuOpen && claudeErrorStatus(text) == .unanswered
+    case .apiError, .apiErrorAfterOurSleep:
+        return !menuOpen && claudeErrorStatus(text, sleepWasOurs: trigger == .apiErrorAfterOurSleep) == .unanswered
     case .limitReset:
         return !menuOpen && usageLimitVisible(text) && claudeUIVisible(text) && !menuVisible(text)
             && !claudeWorkingVisible(text) && !claudeAutoResumeVisible(text)

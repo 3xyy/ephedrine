@@ -380,6 +380,21 @@ public func limitWaitHolds(resumeAts: [Date], now: Date, onBattery: Bool) -> Boo
     }
 }
 
+/// On battery, an owner whose last input was this recent counts as at the Mac.
+public let limitWaitPresence: TimeInterval = 5 * 60
+
+/// Whether scheduled usage-limit resumes want lid mode (sleep off with the lid
+/// shut). Lid mode has to be on before the lid closes: a Mac that has
+/// clamshell-slept on battery can't be woken fully again. So on battery a wait
+/// of any length wants it while the lid is shut or the owner is at the Mac, not
+/// only in its last hour. Walk away with the lid open and macOS idle-sleeps as
+/// before. 2026-10-20: limit at 23:24, reset at 1:30, lid closed at 00:29 with
+/// lid mode off, and the Mac slept through the reset.
+public func limitWaitHoldsLid(resumeAts: [Date], now: Date, onBattery: Bool, lidShut: Bool, userIdle: TimeInterval) -> Bool {
+    limitWaitHolds(resumeAts: resumeAts, now: now, onBattery: onBattery)
+        || ((lidShut || userIdle < limitWaitPresence) && resumeAts.contains { now < $0 + limitWaitGrace })
+}
+
 /// "Also keep awake while…" detectors have no end of their own (a dev server
 /// runs all day; one held the Mac awake 12.6 hours on 2026-10-09). On battery
 /// they get an hour, then the Mac may sleep. The activity stopping or the

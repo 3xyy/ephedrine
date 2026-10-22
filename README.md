@@ -59,7 +59,7 @@ Optional. Close the lid and Claude keeps going. A minute after it finishes, the 
 Optional, for Terminal.app and cmux.
 
 - Types `continue` when a session stops on an API error.
-- Waits out a usage limit that resets within 6 hours and resumes after it (on battery it only stays awake for the last hour).
+- Waits out a usage limit that resets within 6 hours and resumes after it. On battery it only stays awake for the last hour with the lid open, but if you close the lid while you're at the Mac it holds the wait until the reset.
 - Notices Claude working on screen when no hook fires.
 - cmux needs one extra step, described in the [cmux](#cmux) section.
 
@@ -70,7 +70,8 @@ Your Claude session and weekly limits show in the menu, with an alert at a level
 ### Battery and heat safety
 
 - On battery, Ephedrine stops keeping the Mac awake for anything at 30, 20 or 10% (you pick, or only on the charger) until you plug in, so it never runs the battery flat.
-- Background reasons (usage-limit waits, the "also keep awake while" list) get an hour at most on battery.
+- Background reasons (usage-limit waits with the lid open, the "also keep awake while" list) get an hour at most on battery.
+- At that limit, once you're away (the lid shut, or idle for the sleep countdown after a 10-second heads-up), it pauses Claude Code and puts the Mac to sleep, since Claude keeps the Mac awake by itself. Claude picks up where it was when you plug in or come back. While you're at the Mac you only get a notification. You can turn this off in Settings.
 - With the lid shut, it also reacts to low battery and heat. See [With the lid shut](#with-the-lid-shut).
 
 ### The menu

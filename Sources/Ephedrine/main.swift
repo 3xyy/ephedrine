@@ -64,6 +64,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var checkInWakeID = IOPMAssertionID(0)          // the "user is active" request that makes a nap a full wake
     var checkInActivity: NSObjectProtocol?          // keeps App Nap from slowing the tick while check-ins are on
     var batteryStop = BatteryStop()                 // on battery at the floor: keep nothing awake until plugged in
+    var batteryPause = BatteryPause()               // at the floor and away: Claude Code paused, the Mac asleep
+    var claudePausedProcesses: [PausedProcess] = [] // what the battery pause stopped (also in pausedProcesses)
+    var claudeResumedAt = Date.distantPast          // a "went to sleep" error after this was our doing (ScanFlags)
     var batteryMisses = BatteryReadMisses()         // a battery that can't be read counts as at the floor
     var heatStop = HeatStop()                       // critical heat: keep nothing awake until it cools to serious
     var heatNotedAt = Date.distantPast
@@ -143,6 +146,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let watchWorking: Bool
         let canType: Bool   // false while asleep / in a dark wake / just after waking
         let cmuxCLI: String?   // the running cmux's CLI, nil when cmux isn't running
+        let afterOurSleep: Bool   // a battery pause slept the Mac and resumed Claude in the last 10 min
     }
 
     let detectors: [Detector] = [
@@ -270,6 +274,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
     func applicationWillTerminate(_ note: Notification) {
         awake.apply(system: false, display: false)
+        resumeClaude("quitting")   // resumeApps leaves Claude's processes alone
         if awayMode || lidPaused || !pausedProcesses.isEmpty { resumeApps(); restoreBrightness() }   // never leave apps (or Docker) frozen
         clearAwayState()
         restoreLidExtras(endingHold: true)   // and disarm the watchdog's unmute: a waiting device isn't its business
@@ -428,8 +433,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         extraActiveHolding = extraActive
         let claudeWorkingNow = settings.keepAwakeClaudeWorking && claudeWorkingCached
         let limitWaitNow = settings.autoResumeLimit && limitWaitPending
+        let lidShutAlone = lidClosedNow() && !externalDisplayActive()
+        let idle = hidIdleSeconds()
+        // Lid mode, unlike keep-awake, holds a usage-limit wait whenever the lid
+        // could close on it (limitWaitHoldsLid).
+        let limitWaitLid = settings.autoResumeLimit && limitWaitHoldsLid(
+            resumeAts: limitResumeAts, now: Date(), onBattery: !onACPower(), lidShut: lidShutAlone, userIdle: idle)
         let blocked = busy || extraActive || claudeWorkingNow || limitWaitNow
-        let claudeNeeds = busy || claudeWorkingNow || limitWaitNow || (autoContinue && retryPending)
+        let claudeNeeds = busy || claudeWorkingNow || limitWaitLid || (autoContinue && retryPending)
+        // Before lid mode: at the floor with the lid shut, Claude is paused before the Mac sleeps.
+        stepBatteryPause(lidShutAlone: lidShutAlone, idle: idle, claudeBusy: busy || claudeWorkingNow, percent: charge)
         updateLidMode(claudeBusy: settings.enabled && claudeNeeds, battery: charge)
         // An output that wasn't connected when the hold ended is unmuted once
         // it's back; a launch with the lid shut leaves the keyboard light to here too.
@@ -456,7 +469,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             // has already blacked it out, so let it sleep and save the power.
             // With the lid shut the screen is dark anyway, but holding the display
             // awake kept it powered (2026-10-12: on for 9 minutes after the lid shut).
-            let lidShutAlone = lidClosedNow() && !externalDisplayActive()
             let displayOff = awayMode || lidShutAlone || (settings.allowDisplaySleep && !busy && !manualActive && !claudeWorkingNow
                 && (extraActive || limitWaitNow))
             if awake.apply(system: true, display: !displayOff) {
@@ -485,7 +497,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
         // A one-off lid-closed session is an explicit "don't sleep", like a manual override.
         // Not in a nap: the countdown and its warning there are pointless.
-        if settings.enabled && armed && !blocked && !manualActive && !awayMode && fullyAwake && lidState.session == nil {
+        // The battery pause has its own heads-up and sleep: one notification, not two.
+        if settings.enabled && armed && !blocked && !manualActive && !awayMode && fullyAwake && lidState.session == nil
+            && batteryPause.headsUpAt == nil && !batteryPause.paused {
             if let t = autoSleepTitle() { title = t }
         } else {
             // Includes a manual override starting mid-warning: a stale
@@ -506,7 +520,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             let flags = ScanFlags(mode: settings.autoContinueMode, resumeLimit: settings.autoResumeLimit,
                                   watchWorking: settings.keepAwakeClaudeWorking,
                                   canType: fullyAwake && Date().timeIntervalSince(lastFullWake) > postWakeQuiet,
-                                  cmuxCLI: runningCmuxCLI())
+                                  cmuxCLI: runningCmuxCLI(),
+                                  afterOurSleep: Date().timeIntervalSince(claudeResumedAt) < 600)
             continueQueue.async { [weak self] in
                 self?.scanTerminalForErrors(flags)
                 DispatchQueue.main.async { self?.scanning = false }
@@ -619,7 +634,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             }
             // ── API-error auto-continue ──
             guard flags.mode != .off else { continue }
-            let status = claudeErrorStatus(tab.text)
+            let status = claudeErrorStatus(tab.text, sleepWasOurs: flags.afterOurSleep)
             switch status {
             case .skipped(let why) where errorSkipLogged[tab.key] != why:
                 errorSkipLogged[tab.key] = why
@@ -637,7 +652,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             if now >= st.nextTryAt && st.attempts < flags.mode.maxAttempts && cmuxScan.stuck.contains(tab.key) {
                 st.attempts = flags.mode.maxAttempts   // typing changed nothing there: done with this error (logged then)
             } else if now >= st.nextTryAt && st.attempts < flags.mode.maxAttempts {
-                let result = sendToTab("continue", tab.source, trigger: .apiError, canTypeNow: canTypeNow)
+                let result = sendToTab("continue", tab.source, trigger: flags.afterOurSleep ? .apiErrorAfterOurSleep : .apiError,
+                                       canTypeNow: canTypeNow)
                 // Not awake: nothing typed or counted, it tries again next scan. A skip ends the episode (continueAfterTry).
                 let step = continueAfterTry(result.asTry, attempts: st.attempts, nextTryAt: st.nextTryAt, mode: flags.mode,
                                             cmux: tab.key.hasPrefix(cmuxKeyPrefix), now: now)
@@ -993,14 +1009,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     /// SIGCONT what suspendApps stopped, apps before their helpers, skipping
     /// any that exited (its pid may belong to something else now).
     func resumeApps() {
-        let procs = pausedProcesses.isEmpty ? [] : processSnapshot()
-        if procs.isEmpty && !pausedProcesses.isEmpty { logLine("couldn't read the process list, resuming every paused pid") }
-        let live = toResume(pausedProcesses, in: procs)
+        // The battery pause's Claude processes stay stopped: resumeClaude ends that.
+        let mine = pausedProcesses.filter { !claudePausedProcesses.contains($0) }
+        let procs = mine.isEmpty ? [] : processSnapshot()
+        if procs.isEmpty && !mine.isEmpty { logLine("couldn't read the process list, resuming every paused pid") }
+        let live = toResume(mine, in: procs)
         for p in live { kill(p.pid, SIGCONT) }
-        let skipped = pausedProcesses.count - live.count
+        let skipped = mine.count - live.count
         logLine("resumed \(pausedAppCount) apps" + (dockerPaused ? " and Docker" : "")
                 + " (\(live.count) processes" + (skipped > 0 ? ", skipped \(skipped) that exited" : "") + ")")
-        pausedProcesses.removeAll()
+        pausedProcesses = claudePausedProcesses
         pausedNames.removeAll()
         dockerPausedProcesses.removeAll()
     }
@@ -1028,6 +1046,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         return ok
     }
     func clearAwayState() {
+        // Callers clear after resumeApps; a battery pause may still have Claude stopped.
+        if !pausedProcesses.isEmpty { persistAwayState(); return }
         try? fm.removeItem(atPath: awayStatePath); try? fm.removeItem(atPath: pausedPidsPath)
         updateWatchdog()
     }
@@ -1054,9 +1074,87 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         savedBrightness = -1
     }
 
-    func batteryNotify(_ t: String, _ b: String) {
+    func batteryNotify(_ t: String, _ b: String, id: String = "ka_battery") {
         let c = UNMutableNotificationContent(); c.title = t; c.body = b
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ka_battery", content: c, trigger: nil))
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: c, trigger: nil))
+    }
+
+    // MARK: Battery pause (BatteryPause)
+
+    /// At the battery limit: say so while the owner is at the Mac, and once
+    /// they're away pause Claude Code and sleep the Mac. Runs before lid mode
+    /// each tick, so with the lid shut Claude is stopped before the Mac sleeps.
+    func stepBatteryPause(lidShutAlone: Bool, idle: Double, claudeBusy: Bool, percent: Int?) {
+        let pct = percent.map { "\($0)%" } ?? "its limit"
+        let ev = batteryPause.step(BatteryPauseInputs(
+            // "Only on the charger" stops on battery at any level: no reserve to keep, so no pause.
+            enabled: settings.batteryPauseClaude && awakeBatteryFloor(settings.batteryFloor) < lidOnlyPluggedIn,
+            stopped: batteryStop.stopped, onBattery: !onACPower(),
+            lidShutAlone: lidShutAlone, fullyAwake: fullyAwake, idle: idle, awayAfter: effectiveGraceSeconds(),
+            claudeBusy: claudeBusy, now: Date()))
+        switch ev {
+        case .warnHere?:
+            logLine("battery at \(pct) with you at the Mac: Claude keeps working, and is paused once you step away")
+            batteryNotify("Battery at \(pct)", "Claude keeps working while you're here. When you step away, Ephedrine pauses it and puts the Mac to sleep, so the rest of the battery is there when you're back.")
+        case .headsUp?:
+            logLine("battery at \(pct) and you're away: pausing Claude and sleeping in \(Int(BatteryPause.headsUpDelay))s unless you're back")
+            batteryNotify("Pausing Claude to save battery", "Battery at \(pct). Claude pauses and the Mac sleeps in \(Int(BatteryPause.headsUpDelay)) seconds. Move the mouse or press a key to keep going.", id: "ka_batterypause")
+        case .cancelled?:
+            logLine("battery pause cancelled: you're back")
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["ka_batterypause"])
+        case .pauseAndSleep?:
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["ka_batterypause"])
+            pauseClaude(pct)
+            doSleep()
+        case .resume(let why)?:
+            switch why {
+            case .pluggedIn: resumeClaude("plugged in")
+            case .back:      resumeClaude("you're back")
+            case .turnedOff: resumeClaude("battery pause turned off")
+            }
+        case nil: break
+        }
+    }
+
+    /// SIGSTOP every Claude Code process tree and the shells sessions run in
+    /// (claudePausePlan), recorded first so a crash or relaunch still resumes them.
+    func pauseClaude(_ pct: String) {
+        guard claudePausedProcesses.isEmpty else { return }
+        let procs = processSnapshot()
+        if procs.isEmpty { logLine("battery at \(pct): couldn't read the process list, so Claude wasn't paused"); return }
+        func lines(_ field: String) -> [Int32: String] {
+            var out: [Int32: String] = [:]
+            for line in runTool("/bin/ps", ["-axww", "-o", "pid=,\(field)="]).split(separator: "\n") {
+                let parts = line.trimmingCharacters(in: .whitespaces).split(separator: " ", maxSplits: 1)
+                if parts.count == 2, let pid = Int32(parts[0]) { out[pid] = String(parts[1]) }
+            }
+            return out
+        }
+        let comm = lines("comm"), args = lines("args")
+        var info: [Int32: ProcText] = [:]
+        for (pid, c) in comm { info[pid] = ProcText(comm: c, args: args[pid] ?? "") }
+        let plan = claudePausePlan(procs: procs, info: info, selfPID: getpid())
+        let sessions = plan.filter { info[$0.pid].map(isClaudeCode) ?? false }.count
+        claudePausedProcesses = stopRecorded(plan.map { PausedProcess(pid: $0.pid, start: $0.start) }, logPrefix: "battery pause: ")
+        logLine(plan.isEmpty ? "battery at \(pct) and you're away: no Claude Code running, sleeping"
+                : "battery at \(pct) and you're away: paused Claude Code (\(sessions) processes of its own, \(claudePausedProcesses.count) in all), sleeping")
+    }
+
+    /// SIGCONT what pauseClaude stopped, Claude's trees before their shells,
+    /// skipping pids reused since. For 10 minutes after, auto-continue answers
+    /// the "went to sleep" errors the pause caused.
+    func resumeClaude(_ why: String) {
+        let entries = claudePausedProcesses
+        guard !entries.isEmpty else { return }
+        let procs = processSnapshot()
+        if procs.isEmpty { logLine("couldn't read the process list, resuming every paused Claude pid") }
+        let live = toResume(entries, in: procs)
+        for p in live { kill(p.pid, SIGCONT) }
+        pausedProcesses.removeAll { entries.contains($0) }
+        claudePausedProcesses.removeAll()
+        if pausedProcesses.isEmpty { clearAwayState() } else { persistAwayState() }
+        claudeResumedAt = Date()
+        logLine("\(why), resumed Claude Code (\(live.count) processes)")
     }
 
     func heatNotify(_ t: String, _ b: String) {
