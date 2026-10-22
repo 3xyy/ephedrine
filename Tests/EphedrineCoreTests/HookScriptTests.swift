@@ -14,11 +14,11 @@ private func scratchHome() -> String {
     return dir
 }
 
-private func hook(_ home: String, _ args: [String], _ json: String) {
+private func hook(_ home: String, _ args: [String], _ json: String, plutil: String? = nil) {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/bin/sh")
     p.arguments = [hookScript] + args
-    p.environment = ["HOME": home, "PATH": "/usr/bin:/bin"]
+    p.environment = ["HOME": home, "PATH": "/usr/bin:/bin"].merging(plutil.map { ["EPHEDRINE_PLUTIL": $0] } ?? [:]) { a, _ in a }
     let input = Pipe()
     p.standardInput = input
     p.standardOutput = FileHandle.nullDevice
@@ -72,4 +72,17 @@ private func expiry(_ home: String, _ marker: String) -> Double {
     hook(home, ["busy", "7200"], #"{"session_id":"s1","hook_event_name":"PreToolUse","tool_use_id":"t9","agent_id":"a1"}"#)
     #expect(expiry(home, "s1~agent-a1") >= before + 1800 - 1)
     #expect(markers(home).contains("s1~t9"))
+}
+
+@Test func aMissingFieldIsEmptyWherePlutilPrintsItsErrorOnStdout() throws {
+    // CI on macOS 15, 2026-10-22: plutil printed "Could not extract value" to
+    // stdout, so every event without an agent_id made a marker
+    // "s1~agent-stdinCouldnotextractvalue…" that kept the session busy.
+    let home = scratchHome()
+    let fake = home + "/plutil"
+    try "#!/bin/sh\n/usr/bin/plutil \"$@\" 2>&1\n".write(toFile: fake, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake)
+    hook(home, ["busy", "300"], #"{"session_id":"s1","hook_event_name":"UserPromptSubmit"}"#, plutil: fake)
+    hook(home, ["busy", "7200"], #"{"session_id":"s1","hook_event_name":"PreToolUse","tool_use_id":"t1"}"#, plutil: fake)
+    #expect(markers(home) == ["s1", "s1~t1"])
 }

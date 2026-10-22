@@ -32,8 +32,14 @@ lease="${2:-300}"
 input=$(cat)
 
 # Top-level JSON fields via plutil (a sed match could hit the same key inside
-# tool_input / tool_response). Empty if absent.
-field() { printf '%s' "$input" | /usr/bin/plutil -extract "$1" raw -o - - 2>/dev/null; }
+# tool_input / tool_response). Empty if absent: macOS 15's plutil prints
+# "Could not extract value" on stdout, so its output counts only when it
+# succeeded (CI 2026-10-22: that text became an agent id).
+plutil="${EPHEDRINE_PLUTIL:-/usr/bin/plutil}"   # tests stand in a plutil that behaves like macOS 15's
+field() {
+    out=$(printf '%s' "$input" | "$plutil" -extract "$1" raw -o - - 2>/dev/null) || return 0
+    printf '%s' "$out"
+}
 clean() { tr -cd 'A-Za-z0-9._-'; }
 
 sid=$(field session_id | clean)
