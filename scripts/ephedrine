@@ -48,12 +48,17 @@ import json, os, shutil, sys
 path, hook, mode = sys.argv[1], sys.argv[2], sys.argv[3]
 # PreToolUse gets a 2h lease: one long tool call (a build, a subagent) fires no
 # hooks while it runs. PostToolUse/Stop shorten or clear it right after.
+# SubagentStart/SubagentStop do the same per subagent, so a background agent
+# still running after the main turn's Stop keeps the session busy.
+# Keep this list in step with claudeHookEvents (Sources/EphedrineCore/Setup.swift).
 wanted = {
     "UserPromptSubmit": f"{hook} busy 300",
     "PreToolUse":       f"{hook} busy 7200",
     "PostToolUse":      f"{hook} busy 300",
     "Stop":             f"{hook} idle",
     "SessionEnd":       f"{hook} idle",
+    "SubagentStart":    f"{hook} busy 7200",
+    "SubagentStop":     f"{hook} busy 300",
 }
 ours = lambda g: any("/.claude/ephedrine/hook.sh" in h.get("command", "") for h in g.get("hooks", []))
 
@@ -146,7 +151,10 @@ cmd_status() {
     echo "version:   $(cmd_version)"
     if [ -d "$APP" ]; then echo "app:       $APP"; else echo "app:       not installed (run: ephedrine setup)"; fi
     if pgrep -xq Ephedrine; then echo "running:   yes"; else echo "running:   no"; fi
-    if [ -f "$SETTINGS" ] && grep -q "/.claude/ephedrine/hook.sh" "$SETTINGS"; then echo "hooks:     installed"; else echo "hooks:     missing (run: ephedrine setup)"; fi
+    if [ -f "$SETTINGS" ] && grep -q "/.claude/ephedrine/hook.sh" "$SETTINGS"; then
+        if grep -q '"SubagentStop"' "$SETTINGS"; then echo "hooks:     installed"
+        else echo "hooks:     out of date, background agents go unseen (run: ephedrine setup)"; fi
+    else echo "hooks:     missing (run: ephedrine setup)"; fi
     if [ -f "$SUDOERS" ]; then echo "lid mode:  set up"; else echo "lid mode:  not set up"; fi
 }
 

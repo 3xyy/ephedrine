@@ -46,6 +46,7 @@ public struct LidState: Equatable {
     public var tripped: LidGuard?
     public var closedSince: Date?
     public var capped = false          // the lid-shut cap already stopped Claude-driven mode this close
+    public var nappingSince: Date?     // lid shut and the Mac not fully awake since then
     public init(session: LidSession? = nil) { self.session = session }
 
     /// A Remote Control check-in starts the lid-shut cap over, or work it
@@ -66,13 +67,15 @@ public struct LidInputs {
     public var hot: Bool              // past the heat limit (lidTooHot)
     public var closedCap: TimeInterval   // Claude-driven mode stops once the lid's been shut this long; 0 = never
     public var checkIn: Bool         // a Remote Control check-in is open (RemoteCheckIn.isOpen)
+    public var fullyAwake: Bool      // systemFullyAwake: false during a nap (DarkWake)
     public var now: Date
     public init(whileClaude: Bool, claudeBusy: Bool, lidClosed: Bool, onBattery: Bool,
                 batteryPercent: Int?, batteryFloor: Int, hot: Bool, closedCap: TimeInterval = 0,
-                checkIn: Bool = false, now: Date) {
+                checkIn: Bool = false, fullyAwake: Bool = true, now: Date) {
         self.whileClaude = whileClaude; self.claudeBusy = claudeBusy; self.lidClosed = lidClosed
         self.onBattery = onBattery; self.batteryPercent = batteryPercent; self.batteryFloor = batteryFloor
-        self.hot = hot; self.closedCap = closedCap; self.checkIn = checkIn; self.now = now
+        self.hot = hot; self.closedCap = closedCap; self.checkIn = checkIn; self.fullyAwake = fullyAwake
+        self.now = now
     }
 }
 
@@ -85,11 +88,16 @@ public struct LidOutput: Equatable {
     public var sessionEnded: LidSessionEnd?
     public var newlyTripped: LidGuard?    // report once per trip (notification)
     public var capReached = false         // the lid-shut cap just stopped Claude-driven mode (once per close)
+    public var napRelease = false         // wanted, but the Mac is only napping with the lid shut, so let it sleep
 }
 
 /// Keep lid mode on this long after Claude stops, so the gap between turns,
 /// subagents, or an auto-continue retry doesn't put the Mac to sleep.
 public let lidClaudeLinger: TimeInterval = 60
+
+/// A lid-shut nap is let go after this long, so one odd capabilities read
+/// can't end lid mode on a Mac that's really awake.
+public let lidNapRelease: TimeInterval = 15
 
 public func stepLid(_ s: inout LidState, _ i: LidInputs) -> LidOutput {
     var out = LidOutput(disableSleep: false, sessionEnded: nil, newlyTripped: nil)
@@ -126,7 +134,17 @@ public func stepLid(_ s: inout LidState, _ i: LidInputs) -> LidOutput {
         s.tripped = nil
     }
 
-    out.disableSleep = s.tripped == nil && wanted
+    // Never hold a lid-shut nap (DarkWake): no screen, Low Power Mode, nothing
+    // can type "continue", and Wi-Fi that drops may not come back. Only a
+    // check-in still waiting for its full wake keeps one. On 2026-10-21 a
+    // check-in that never got one left a usage-limit wait holding the Mac
+    // half awake for 9h21m.
+    let napping = i.lidClosed && !i.fullyAwake
+    if !napping { s.nappingSince = nil } else if s.nappingSince == nil { s.nappingSince = i.now }
+    let letGo = napping && !i.checkIn && i.now.timeIntervalSince(s.nappingSince ?? i.now) >= lidNapRelease
+
+    out.disableSleep = s.tripped == nil && wanted && !letGo
+    out.napRelease = s.tripped == nil && wanted && letGo
     return out
 }
 
@@ -181,7 +199,7 @@ public func claudeCanHoldLid(enabled: Bool, batteryStopped: Bool, heatStopped: B
 // minutes (a DarkWake: no screen, no Wi-Fi). A check-in turns one of those naps
 // into a full wake for `window`, so Remote Control can fetch what was sent from
 // a phone. If Claude starts working, Claude-driven lid mode keeps the Mac awake
-// as usual; if not, the window closes and it sleeps again.
+// as usual; if not, the window closes and it sleeps again. On the charger only.
 
 public enum CheckInEnd: String {
     case windowOver, noFullWake, lidOpened, turnedOff, guarded
@@ -200,7 +218,7 @@ public struct CheckInInputs {
     public var sleepStarting: Bool    // macOS announced a sleep in the last minute
     public var externalDisplay: Bool
     public var guarded: Bool          // lidGuard says sleep anyway
-    public var onBattery: Bool        // check in less often
+    public var onBattery: Bool        // no check-ins: a nap on battery never becomes a full wake
     public var now: Date
     public init(enabled: Bool, lidClosed: Bool, fullyAwake: Bool, sleepStarting: Bool,
                 externalDisplay: Bool, guarded: Bool, onBattery: Bool = false, now: Date) {
@@ -216,10 +234,8 @@ public struct RemoteCheckIn: Equatable {
     /// A nap that hasn't become a full wake by now won't (on 2026-10-05 sleep
     /// switched off inside a nap held the Mac there, no Wi-Fi, for 74 minutes).
     public static let fullWakeTimeout: TimeInterval = 30
-    /// Between check-ins, so clustered naps don't each wake the Mac. Naps can
-    /// come every 5 minutes, which on battery meant 2 minutes awake in every 5.
+    /// Between check-ins, so clustered naps don't each wake the Mac.
     public static let spacing: TimeInterval = 300
-    public static let spacingOnBattery: TimeInterval = 900
     /// Not right as the lid closes: capabilities drop the same way while it falls asleep.
     public static let afterClose: TimeInterval = 60
 
@@ -247,9 +263,11 @@ public struct RemoteCheckIn: Equatable {
             cancel()
             return .ended(e)
         }
+        // Not on battery: macOS never turned a lid-shut nap on battery into a
+        // full wake (0 of 323, Oct 13 to 21; 39 of 39 on the charger).
         guard i.enabled, i.lidClosed, !i.fullyAwake, !i.sleepStarting, !i.externalDisplay, !i.guarded,
-              let closed = closedSince, i.now.timeIntervalSince(closed) >= Self.afterClose,
-              i.now.timeIntervalSince(lastStart) >= (i.onBattery ? Self.spacingOnBattery : Self.spacing) else { return nil }
+              !i.onBattery, let closed = closedSince, i.now.timeIntervalSince(closed) >= Self.afterClose,
+              i.now.timeIntervalSince(lastStart) >= Self.spacing else { return nil }
         startedAt = i.now; awakeAt = nil; lastStart = i.now
         return .started
     }

@@ -121,13 +121,22 @@ public func claudeWorkingVisible(_ text: String) -> Bool {
     if low.contains("esc to interrupt") || low.contains("enter to interrupt")
         || low.contains("dynamic workflow") || low.contains("workflow to finish")
         || low.contains("running in the background") { return true }
-    return t.split(separator: "\n").contains { line in
-        let s = String(line)
-        return spinnerLine.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
+    let lines = t.split(separator: "\n").map(String.init)
+    // "✻ Waiting for 2 background agents to finish" ends a main turn while its
+    // agents still run. It's a transcript line that stays on screen after
+    // they're done, so it counts only while nothing Claude printed follows it.
+    if let newest = lines.last(where: { l in
+        l.trimmingCharacters(in: .whitespaces).first.map { "✻✶✳✢✽·*⏺●".contains($0) } ?? false
+    }), backgroundAgentsLine.firstMatch(in: newest, range: NSRange(newest.startIndex..., in: newest)) != nil {
+        return true
+    }
+    return lines.contains { s in
+        spinnerLine.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
     }
 }
 
 private let spinnerLine = try! NSRegularExpression(pattern: "^\\s*[^\\s\\w]\\s+[A-Z][\\w'-]*…(\\s|$)")   // case-sensitive
+private let backgroundAgentsLine = try! NSRegularExpression(pattern: "^\\s*[^\\s\\w]\\s+Waiting for \\d+ background agents? to finish")
 
 /// True if Claude Code is in its own API retry loop ("… · Retrying in 14s ·
 /// attempt 9/10"). That phase runs ~3 min between the error lines it prints,

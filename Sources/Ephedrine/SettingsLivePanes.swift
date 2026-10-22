@@ -122,7 +122,7 @@ struct LidPane: View {
                       "Close the lid and Claude keeps going, error retries and usage-limit waits included. A minute after it finishes, the Mac sleeps. Only while “Keep awake while Claude is working” is on.",
                       $settings.lidWhileClaude)
             SettingsRow("Check for Remote Control messages while asleep",
-                        subtitle: "With the lid shut, macOS wakes the Mac for a few seconds every 10 to 20 minutes. Ephedrine turns those into a full wake for 2 minutes, so `claude remote-control` can pick up what you sent from your phone. If Claude starts working, the Mac stays awake until it's done, then sleeps again.") {
+                        subtitle: "With the lid shut, macOS wakes the Mac for a few seconds every 10 to 20 minutes. Ephedrine turns those into a full wake for 2 minutes, so `claude remote-control` can pick up what you sent from your phone. If Claude starts working, the Mac stays awake until it's done, then sleeps again. Only on the charger: on battery, macOS doesn't let these short wakes become full ones.") {
                 Toggle("Check for Remote Control messages while asleep", isOn: $settings.lidRemoteCheckIn).toggleStyle(ClayToggleStyle())
             }
             .disabled(!settings.lidWhileClaude)

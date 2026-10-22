@@ -18,7 +18,22 @@ public func automationPermission(_ status: Int32) -> AutomationPermission {
     }
 }
 
-/// Whether ~/.claude/settings.json runs our hook script (`ephedrine setup` adds it).
+/// The Claude Code events `ephedrine setup` hooks (scripts/ephedrine, edit_hooks).
+public let claudeHookEvents = ["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd",
+                               "SubagentStart", "SubagentStop"]
+
+/// Whether ~/.claude/settings.json runs our hook script on every event in
+/// claudeHookEvents. A setup from before 1.2.2 has no subagent events, so it
+/// counts as missing and the setup screen offers the command again.
 public func claudeHooksInstalled(settingsJSON: String?) -> Bool {
-    settingsJSON?.contains("/.claude/ephedrine/hook.sh") ?? false
+    guard let data = settingsJSON?.data(using: .utf8),
+          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let hooks = root["hooks"] as? [String: Any] else { return false }
+    return claudeHookEvents.allSatisfy { event in
+        (hooks[event] as? [[String: Any]] ?? []).contains { group in
+            (group["hooks"] as? [[String: Any]] ?? []).contains {
+                ($0["command"] as? String)?.contains("/.claude/ephedrine/hook.sh") == true
+            }
+        }
+    }
 }

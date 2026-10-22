@@ -48,7 +48,7 @@ Optional. Close the lid and Claude keeps going. A minute after it finishes, the 
 - It sleeps anyway if the battery runs low, the Mac gets too hot, or the lid has been shut longer than you allow.
 - While the lid is shut it can also switch on Low Power Mode, mute the sound, turn the keyboard light off and pause Docker when nothing is running in it. See [With the lid shut](#with-the-lid-shut).
 - With lid-closed mode set up, Stay awake can keep the lid shut too.
-- Remote Control check-ins (optional, off by default): with the lid shut and the Mac asleep, macOS still wakes it for a few seconds every 10 to 20 minutes. Ephedrine turns those into a full wake for 2 minutes, so `claude remote-control` can pick up a message you sent from your phone. If Claude starts working, the Mac stays awake until it's done, then goes back to sleep.
+- Remote Control check-ins (optional, off by default): with the lid shut and the Mac asleep, macOS still wakes it for a few seconds every 10 to 20 minutes. Ephedrine turns those into a full wake for 2 minutes, so `claude remote-control` can pick up a message you sent from your phone. If Claude starts working, the Mac stays awake until it's done, then goes back to sleep. This only works on the charger: on battery, macOS never let one of those short wakes become a full wake, so Ephedrine doesn't try.
 
 ### I'm leaving
 
@@ -121,7 +121,7 @@ The heat setting uses macOS's thermal pressure level (Warm, Hot, Very hot) becau
 
 ### Knowing Claude is working
 
-Claude Code runs a small hook script when you send a prompt, around every tool call, and when it stops. The script keeps a marker file per session in `~/.claude/ephedrine/sessions` holding an expiry time, and the app checks every 3 seconds. A tool call gets a two hour lease so a long build or subagent can't time out halfway; the next hook shortens it again. Ctrl-C fires no hook, so a cancelled prompt just expires (or use "Claude is done" in Settings).
+Claude Code runs a small hook script when you send a prompt, around every tool call, when a subagent starts and ends, and when it stops. The script keeps a marker file per session in `~/.claude/ephedrine/sessions` holding an expiry time, and the app checks every 3 seconds. A tool call or a subagent gets a two hour lease so a long build or agent can't time out halfway; the next hook shortens it again. A background agent stays counted after the main turn ends, until it finishes. Ctrl-C fires no hook, so a cancelled prompt just expires (or use "Claude is done" in Settings).
 
 ### Power assertions
 

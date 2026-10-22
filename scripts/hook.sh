@@ -11,13 +11,17 @@
 #   <sid>          the session (UserPromptSubmit / PostToolUse, short lease)
 #   <sid>~<tool>   one running tool call (PreToolUse, long lease), removed by
 #                  that call's PostToolUse
+#   <sid>~agent-<id>  one running subagent (SubagentStart, long lease), removed
+#                  by its SubagentStop
 #
 # Per-call markers matter for subagents: their tool calls carry the parent's
 # session_id, so with one marker per session a subagent's PostToolUse cut the
 # parent Agent call's 2-hour lease to 5 minutes, and a subagent that then
 # generated for 5+ minutes looked "finished" (2026-10-05: the Mac slept mid-task).
-# Stop removes all of a session's markers, including those of a *background*
-# agent still running after the main turn ends; its next tool call re-marks it.
+# Stop (the main turn ended) removes the session's markers but not its agents':
+# a *background* agent keeps working after the main turn ends, and on
+# 2026-10-20 one still generating looked finished, so the Mac slept with the lid
+# shut. SessionEnd removes them all.
 
 dir="$HOME/.claude/ephedrine/sessions"
 mkdir -p "$dir"
@@ -35,19 +39,27 @@ sid=$(field session_id | clean)
 [ -z "$sid" ] && sid="default"
 event=$(field hook_event_name)
 tid=$(field tool_use_id | clean)
+aid=$(field agent_id | clean)
 
 case "$action" in
     busy)
         expiry=$(( $(date +%s) + lease ))
         if [ "$event" = "PreToolUse" ] && [ -n "$tid" ]; then
             echo "$expiry" > "$dir/$sid~$tid"
+        elif [ "$event" = "SubagentStart" ] && [ -n "$aid" ]; then
+            echo "$expiry" > "$dir/$sid~agent-$aid"
         else
             [ "$event" = "PostToolUse" ] && [ -n "$tid" ] && rm -f "$dir/$sid~$tid"
+            [ "$event" = "SubagentStop" ] && [ -n "$aid" ] && rm -f "$dir/$sid~agent-$aid"
             echo "$expiry" > "$dir/$sid"
         fi
         ;;
     idle)
-        rm -f "$dir/$sid" "$dir/$sid~"*
+        rm -f "$dir/$sid"
+        for f in "$dir/$sid~"*; do
+            [ "$event" = "Stop" ] && case "$f" in *"~agent-"*) continue ;; esac
+            rm -f "$f"
+        done
         ;;
 esac
 

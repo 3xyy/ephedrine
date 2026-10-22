@@ -289,7 +289,7 @@ extension AppController {
             whileClaude: settings.lidWhileClaude, claudeBusy: claudeBusy, lidClosed: closed,
             onBattery: !onACPower(), batteryPercent: battery, batteryFloor: settings.batteryFloor,
             hot: lidTooHot(thermal, limit: settings.lidHeatLimit),
-            closedCap: TimeInterval(settings.lidClosedCapHours * 3600), now: Date())
+            closedCap: TimeInterval(settings.lidClosedCapHours * 3600), fullyAwake: fullyAwake, now: Date())
         // Before reading the switch: starting a check-in turns sleep off right away.
         stepCheckIn(closed: closed, guarded: lidGuardActive(lidState, inputs) || batteryStop.stopped, claudeBusy: claudeBusy)
         inputs.checkIn = checkIn.isOpen
@@ -308,6 +308,10 @@ extension AppController {
         guard lidSetupOK else { return }
 
         let out = stepLid(&lidState, inputs)
+        if out.napRelease && actual && !lidApplying && fm.fileExists(atPath: lidMarkerPath) {
+            let caps = systemCapabilities().map { String(format: " (capabilities 0x%x)", $0) } ?? ""
+            logLine("lid shut and the Mac is only napping\(caps), letting it sleep instead of holding it half awake")
+        }
         if let e = out.sessionEnded {
             logLine("lid-closed session ended (\(e.rawValue))")
             // Stay awake drives the session; a battery or heat stop ends both.

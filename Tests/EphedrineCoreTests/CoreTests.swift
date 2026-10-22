@@ -206,6 +206,38 @@ let connectionLostScreen = """
     #expect(!claudeWorkingVisible("user@mac ~ %"))
 }
 
+/// The bottom of a pane on 2026-10-21 08:31Z, a main turn over with an agent still running.
+private let backgroundAgentScreen = """
+⏺ The migration and deploy steps from earlier are still waiting on you. Reply "applied" when they're done.
+
+✻ Waiting for 1 background agent to finish
+
+────────────────────────────────────────
+❯
+────────────────────────────────────────
+  ⏵⏵ auto mode on                                     ✔ Update installed · Restart to update
+"""
+
+@Test func waitingForBackgroundAgentsIsWorking() {
+    // 2026-10-20 13:42: this was the newest line and didn't count, so Ephedrine
+    // slept the Mac with the lid shut while the agent was still working.
+    #expect(claudeWorkingVisible(backgroundAgentScreen))
+    #expect(claudeWorkingVisible(backgroundAgentScreen.replacingOccurrences(
+        of: "1 background agent", with: "4 background agents")))
+    #expect(cmuxLiveTailWorking(backgroundAgentScreen + "\n\n"))
+}
+
+@Test func anOldBackgroundAgentsLineIsNotWorking() {
+    // It's a transcript line, not a spinner: it stays on screen after the agents
+    // are done. Anything Claude printed after it makes it old. (One agent done of
+    // three: the hooks' per-agent markers cover the two still running.)
+    let line = "✻ Waiting for 1 background agent to finish"
+    #expect(!claudeWorkingVisible(backgroundAgentScreen.replacingOccurrences(
+        of: line, with: "✻ Waiting for 3 background agents to finish\n\n⏺ Agent \"Profiles plan interfaces summary\" finished · 1m 36s")))
+    #expect(!claudeWorkingVisible(backgroundAgentScreen.replacingOccurrences(
+        of: line, with: line + "\n\n⏺ Both reviews passed. Task 9 is next.\n\n✻ Baked for 10s · done 4:07 PM")))
+}
+
 @Test func usageLimitDetection() {
     // Current Claude Code wording (2.1.x): "You've hit your <name> · resets …"
     for name in ["session limit", "weekly limit", "Opus limit", "Fable limit"] {
@@ -892,15 +924,75 @@ private func napping() -> RemoteCheckIn {
     #expect(c.step(ci(at: 600 + RemoteCheckIn.spacing)) == .started)
 }
 
-@Test func checkInsAreRarerOnBattery() {
-    // Two minutes awake in every five drained the battery; on battery wait 15.
+@Test func checkInsNeverStartOnBattery() {
+    // Oct 13 to 21: 0 of 323 check-ins on battery got a full wake (39 of 39 on
+    // the charger), and each one still paused apps, muted and ran sudo pmset twice.
     var c = RemoteCheckIn()
     _ = c.step(ci(awake: true, onBattery: true, at: 0))
-    #expect(c.step(ci(onBattery: true, at: 600)) == .started)
-    #expect(c.step(ci(onBattery: true, at: 600 + RemoteCheckIn.fullWakeTimeout)) == .ended(.noFullWake))
-    #expect(c.step(ci(onBattery: true, at: 600 + RemoteCheckIn.spacing)) == nil)
-    #expect(c.step(ci(onBattery: true, at: 600 + RemoteCheckIn.spacingOnBattery - 1)) == nil)
-    #expect(c.step(ci(onBattery: true, at: 600 + RemoteCheckIn.spacingOnBattery)) == .started)
+    #expect(c.step(ci(onBattery: true, at: 600)) == nil)
+    #expect(c.step(ci(onBattery: true, at: 6000)) == nil)
+    #expect(!c.isOpen)
+    #expect(c.step(ci(at: 6003)) == .started)                  // plugged in, still napping
+}
+
+/// Lid shut with Claude-driven lid mode wanted (Claude busy), napping or not.
+private func napIn(awake: Bool, checkIn: Bool = false, at t: TimeInterval) -> LidInputs {
+    var i = lidIn(whileClaude: true, busy: true, closed: true, at: t)
+    i.fullyAwake = awake
+    i.checkIn = checkIn
+    return i
+}
+
+@Test func aNapIsLetGoOnceTheCheckInGivesUp() {
+    // 2026-10-21 00:44: a check-in turned sleep off in a lid-shut nap on battery,
+    // never got a full wake, and a usage-limit wait (Claude busy) kept sleep off.
+    // The Mac sat half awake for 9h21m: Low Power Mode, nothing could type
+    // "continue", and a Wi-Fi drop killed the session until the lid opened.
+    var s = LidState()
+    #expect(stepLid(&s, napIn(awake: false, checkIn: true, at: 1000)).disableSleep)
+    #expect(stepLid(&s, napIn(awake: false, checkIn: true, at: 1000 + RemoteCheckIn.fullWakeTimeout - 3)).disableSleep)
+    let o = stepLid(&s, napIn(awake: false, at: 1000 + RemoteCheckIn.fullWakeTimeout))
+    #expect(!o.disableSleep)
+    #expect(o.napRelease)
+    #expect(!stepLid(&s, napIn(awake: false, at: 1000 + 3600)).disableSleep)   // and stays let go
+}
+
+@Test func lidModeKeepsHoldingAFullyAwakeMacWithTheLidShut() {
+    var s = LidState()
+    var held = true
+    for t in stride(from: 1000.0, through: 1000 + 3 * 3600, by: 3) {
+        let o = stepLid(&s, napIn(awake: true, at: t))
+        held = held && o.disableSleep && !o.napRelease
+    }
+    #expect(held)
+}
+
+@Test func aShortNappingReadDoesNotDropLidMode() {
+    var s = LidState()
+    _ = stepLid(&s, napIn(awake: true, at: 1000))
+    #expect(stepLid(&s, napIn(awake: false, at: 1003)).disableSleep)
+    #expect(stepLid(&s, napIn(awake: false, at: 1003 + lidNapRelease - 1)).disableSleep)
+    #expect(stepLid(&s, napIn(awake: true, at: 1003 + lidNapRelease)).disableSleep)
+    #expect(stepLid(&s, napIn(awake: false, at: 1100)).disableSleep)        // the clock starts over
+    #expect(!stepLid(&s, napIn(awake: false, at: 1100 + lidNapRelease)).disableSleep)
+}
+
+@Test func aNapOnlyMattersWithTheLidShut() {
+    var s = LidState()
+    var i = lidIn(whileClaude: true, busy: true, closed: false, at: 1000)
+    i.fullyAwake = false
+    _ = stepLid(&s, i)
+    i.now = Date(timeIntervalSince1970: 1000 + 3600)
+    #expect(stepLid(&s, i).disableSleep)
+}
+
+@Test func aStayAwakeSessionIsNotHeldInANapEither() {
+    var s = LidState(session: .indefinite)
+    var i = lidIn(closed: true, at: 1000)
+    i.fullyAwake = false
+    #expect(stepLid(&s, i).disableSleep)
+    i.now = Date(timeIntervalSince1970: 1000 + lidNapRelease)
+    #expect(!stepLid(&s, i).disableSleep)
 }
 
 @Test func checkInEndsWhenTheLidOpensOrItsTurnedOff() {
@@ -1350,8 +1442,14 @@ private func awaySleeps(_ a: inout AwaySleep, from: TimeInterval, to: TimeInterv
 @Test func hooksInstalledDetection() {
     #expect(!claudeHooksInstalled(settingsJSON: nil))
     #expect(!claudeHooksInstalled(settingsJSON: #"{"model": "opus"}"#))
-    let ours = #"{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "/Users/me/.claude/ephedrine/hook.sh idle"}]}]}}"#
-    #expect(claudeHooksInstalled(settingsJSON: ours))
+    func settings(_ events: [String]) -> String {
+        let groups = events.map { #""\#($0)": [{"hooks": [{"type": "command", "command": "/Users/me/.claude/ephedrine/hook.sh idle"}]}]"# }
+        return #"{"hooks": {"#  + groups.joined(separator: ", ") + "}}"
+    }
+    #expect(claudeHooksInstalled(settingsJSON: settings(claudeHookEvents)))
+    // Installed before 1.2.2: no subagent events, so background agents go unseen. Run setup again.
+    #expect(!claudeHooksInstalled(settingsJSON: settings(["UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd"])))
+    #expect(claudeHookEvents.contains("SubagentStart") && claudeHookEvents.contains("SubagentStop"))
     // someone else's hook that merely mentions the name doesn't count
     #expect(!claudeHooksInstalled(settingsJSON: #"{"hooks": {"Stop": [{"hooks": [{"command": "echo ephedrine"}]}]}}"#))
 }
