@@ -66,3 +66,24 @@ private let ctrlOptCmd = KeyShortcut.control | KeyShortcut.option | KeyShortcut.
     s.shortcuts.set(nil, for: .openMenu)
     #expect(AppSettings(defaults: d).shortcuts.shortcut(for: .openMenu) == nil)
 }
+
+@Test func theMenuKnowsEachShortcutsKeySoItWorksWhileTheMenuIsOpen() {
+    // While a menu is open macOS holds hotkey presses until it closes, so the
+    // open menu carries the same shortcuts as hidden items.
+    #expect(menuKeyEquivalent(14) == "e")
+    #expect(menuKeyEquivalent(37) == "l")
+    #expect(menuKeyEquivalent(49) == " ")
+    #expect(menuKeyEquivalent(122) == String(UnicodeScalar(0xF704)!))   // F1
+    #expect(menuKeyEquivalent(96) == String(UnicodeScalar(0xF708)!))    // F5
+    #expect(menuKeyEquivalent(126) == String(UnicodeScalar(0xF700)!))   // ↑
+    #expect(menuKeyEquivalent(200) == nil)
+}
+
+@Test func aPressHeldBackWhileTheMenuWasOpenIsDropped() {
+    // 2026-10-22: pressing ⌃⌥⌘E three times with the menu open reopened it twice after Esc.
+    #expect(pressedWhileMenuWasOpen(105, openedAt: 100, closedAt: 110))
+    #expect(!pressedWhileMenuWasOpen(111, openedAt: 100, closedAt: 110))
+    #expect(!pressedWhileMenuWasOpen(99, openedAt: 100, closedAt: 110))
+    #expect(!pressedWhileMenuWasOpen(105, openedAt: nil, closedAt: nil))      // never opened
+    #expect(pressedWhileMenuWasOpen(105, openedAt: 100, closedAt: 90))        // open right now
+}

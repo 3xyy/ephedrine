@@ -105,3 +105,44 @@ public func shortcutAllowed(keyCode: UInt32, modifiers: UInt32) -> Bool {
     let held = [KeyShortcut.control, KeyShortcut.option, KeyShortcut.command].filter { modifiers & $0 != 0 }.count
     return held >= 2
 }
+
+private let functionKeyIndex: [UInt32: UInt32] = [
+    122: 0, 120: 1, 99: 2, 118: 3, 96: 4, 97: 5, 98: 6, 100: 7, 101: 8, 109: 9,
+    103: 10, 111: 11, 105: 12, 107: 13, 113: 14, 106: 15, 64: 16, 79: 17, 80: 18, 90: 19,
+]
+
+/// The key a menu item needs for a shortcut's key (AppKit's characters: "e",
+/// " ", NSF5FunctionKey…). While a menu is open macOS holds hotkey presses until
+/// it closes, so the open menu carries each shortcut as a hidden item. nil for
+/// a key it can't name. US layout, like keyName.
+public func menuKeyEquivalent(_ keyCode: UInt32) -> String? {
+    func scalar(_ v: UInt32) -> String? { UnicodeScalar(v).map { String($0) } }
+    if let i = functionKeyIndex[keyCode] { return scalar(0xF704 + i) }
+    switch keyCode {
+    case 49: return " "
+    case 36: return "\r"
+    case 48: return "\t"
+    case 51: return scalar(0x08)
+    case 117: return scalar(0xF728)
+    case 123: return scalar(0xF702)
+    case 124: return scalar(0xF703)
+    case 125: return scalar(0xF701)
+    case 126: return scalar(0xF700)
+    case 115: return scalar(0xF729)
+    case 119: return scalar(0xF72B)
+    case 116: return scalar(0xF72C)
+    case 121: return scalar(0xF72D)
+    default:
+        guard let name = keyNames[keyCode], name.count == 1 else { return nil }
+        return name.lowercased()
+    }
+}
+
+/// A shortcut press macOS held back while the menu was open and handed over
+/// after it closed: drop it, or each extra press reopens the menu (2026-10-22).
+/// `openedAt`/`closedAt` are uptimes; a menu open right now has closedAt < openedAt.
+public func pressedWhileMenuWasOpen(_ at: TimeInterval, openedAt: TimeInterval?, closedAt: TimeInterval?) -> Bool {
+    guard let o = openedAt else { return false }
+    guard let c = closedAt, c >= o else { return at >= o }
+    return at >= o && at <= c
+}

@@ -57,7 +57,7 @@ wanted = {
     "PostToolUse":      f"{hook} busy 300",
     "Stop":             f"{hook} idle",
     "SessionEnd":       f"{hook} idle",
-    "SubagentStart":    f"{hook} busy 7200",
+    "SubagentStart":    f"{hook} busy 1800",
     "SubagentStop":     f"{hook} busy 300",
 }
 ours = lambda g: any("/.claude/ephedrine/hook.sh" in h.get("command", "") for h in g.get("hooks", []))

@@ -71,7 +71,7 @@ Your Claude session and weekly limits show in the menu, with an alert at a level
 
 - On battery, Ephedrine stops keeping the Mac awake for anything at 30, 20 or 10% (you pick, or only on the charger) until you plug in, so it never runs the battery flat.
 - Background reasons (usage-limit waits with the lid open, the "also keep awake while" list) get an hour at most on battery.
-- At that limit, once you're away (the lid shut, "I'm leaving", or idle for the sleep countdown and at least 2 minutes, after a 10-second heads-up), it pauses Claude Code and puts the Mac to sleep, since Claude keeps the Mac awake by itself. Claude picks up where it was when you plug in or come back. While you're at the Mac you only get a notification. You can turn this off in Settings.
+- At that limit, once you're away (the lid shut, "I'm leaving", or the screen gone to sleep by itself while Claude works, after a 10-second heads-up; a video or a call keeps the screen on, so they never count), it pauses Claude Code and puts the Mac to sleep, since Claude keeps the Mac awake by itself. Claude picks up where it was when you plug in or come back. While you're at the Mac you only get a notification. You can turn this off in Settings.
 - With the lid shut, it also reacts to low battery and heat. See [With the lid shut](#with-the-lid-shut).
 
 ### The menu

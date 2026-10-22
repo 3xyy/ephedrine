@@ -11,8 +11,9 @@
 #   <sid>          the session (UserPromptSubmit / PostToolUse, short lease)
 #   <sid>~<tool>   one running tool call (PreToolUse, long lease), removed by
 #                  that call's PostToolUse
-#   <sid>~agent-<id>  one running subagent (SubagentStart, long lease), removed
-#                  by its SubagentStop
+#   <sid>~agent-<id>  one running subagent (SubagentStart), removed by its
+#                  SubagentStop. Its own lease, renewed by each of the agent's
+#                  hooks: Esc fires no SubagentStop, so it must run out by itself.
 #
 # Per-call markers matter for subagents: their tool calls carry the parent's
 # session_id, so with one marker per session a subagent's PostToolUse cut the
@@ -40,14 +41,19 @@ sid=$(field session_id | clean)
 event=$(field hook_event_name)
 tid=$(field tool_use_id | clean)
 aid=$(field agent_id | clean)
+agent_lease=1800
 
 case "$action" in
     busy)
         expiry=$(( $(date +%s) + lease ))
+        # Anything a subagent does renews its marker (SubagentStop removes it below).
+        if [ -n "$aid" ] && [ "$event" != "SubagentStop" ]; then
+            echo $(( $(date +%s) + agent_lease )) > "$dir/$sid~agent-$aid"
+        fi
         if [ "$event" = "PreToolUse" ] && [ -n "$tid" ]; then
             echo "$expiry" > "$dir/$sid~$tid"
         elif [ "$event" = "SubagentStart" ] && [ -n "$aid" ]; then
-            echo "$expiry" > "$dir/$sid~agent-$aid"
+            :   # written above
         else
             [ "$event" = "PostToolUse" ] && [ -n "$tid" ] && rm -f "$dir/$sid~$tid"
             [ "$event" = "SubagentStop" ] && [ -n "$aid" ] && rm -f "$dir/$sid~agent-$aid"

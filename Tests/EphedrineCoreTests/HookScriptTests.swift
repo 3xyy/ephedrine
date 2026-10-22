@@ -55,11 +55,21 @@ private func markers(_ home: String) -> Set<String> {
     #expect(markers(home) == ["s2~agent-a2"])
 }
 
-@Test func anAgentMarkerHoldsALease() {
+private func expiry(_ home: String, _ marker: String) -> Double {
+    let text = (try? String(contentsOfFile: home + "/.claude/ephedrine/sessions/" + marker, encoding: .utf8)) ?? ""
+    return Double(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+}
+
+@Test func anAgentMarkerHoldsAHalfHourLeaseThatItsWorkRenews() {
+    // Review 2026-10-22: Esc fires no SubagentStop, so an agent's marker must
+    // run out on its own. 30 minutes, renewed by each of the agent's tool calls.
     let home = scratchHome()
     let before = Date().timeIntervalSince1970
     hook(home, ["busy", "7200"], #"{"session_id":"s1","hook_event_name":"SubagentStart","agent_id":"a1"}"#)
-    let text = (try? String(contentsOfFile: home + "/.claude/ephedrine/sessions/s1~agent-a1", encoding: .utf8)) ?? ""
-    let expiry = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
-    #expect(expiry >= before + 7200 - 1 && expiry <= before + 7200 + 5)
+    let e = expiry(home, "s1~agent-a1")
+    #expect(e >= before + 1800 - 1 && e <= before + 1800 + 5)
+    try? "1".write(toFile: home + "/.claude/ephedrine/sessions/s1~agent-a1", atomically: true, encoding: .utf8)
+    hook(home, ["busy", "7200"], #"{"session_id":"s1","hook_event_name":"PreToolUse","tool_use_id":"t9","agent_id":"a1"}"#)
+    #expect(expiry(home, "s1~agent-a1") >= before + 1800 - 1)
+    #expect(markers(home).contains("s1~t9"))
 }

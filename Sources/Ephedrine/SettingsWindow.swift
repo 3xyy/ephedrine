@@ -301,7 +301,7 @@ struct SleepPane: View {
                         .pickerStyle(.menu)
                     }
                     SettingsRow("Pause Claude at the limit when you're away",
-                                subtitle: "Claude Code keeps the Mac awake by itself, so at the limit Ephedrine pauses it once you're away (the lid shut, “I'm leaving”, or no input for the sleep countdown's time and at least 2 minutes, after a 10-second heads-up) and puts the Mac to sleep. It picks up where it was when you plug in or come back. While you're at the Mac you get a notification instead.") {
+                                subtitle: "Claude Code keeps the Mac awake by itself, so at the limit Ephedrine pauses it once you're away (the lid shut, “I'm leaving”, or the screen gone to sleep by itself while Claude works, after a 10-second heads-up; a video or a call keeps the screen on, so they never count) and puts the Mac to sleep. It picks up where it was when you plug in or come back. While you're at the Mac you get a notification instead.") {
                         Toggle("Pause Claude at the limit when you're away", isOn: $settings.batteryPauseClaude).toggleStyle(ClayToggleStyle())
                     }
                     .disabled(settings.batteryFloor >= lidOnlyPluggedIn)

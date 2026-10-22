@@ -51,3 +51,12 @@ private func at(_ s: TimeInterval) -> Date { t0.addingTimeInterval(s) }
     #expect(n.step(unreadable: false) == false)     // saved again
     #expect(n.step(unreadable: true) == true)       // the next rebuild or upgrade
 }
+
+@Test func aHeldContinueKeepsTheMacAwakeOnlySoLong() {
+    // Review 2026-10-22: Wi-Fi off on a plane right after an error would hold a
+    // shut Mac awake until the battery limit. Before, the tries ran out in ~27 min.
+    #expect(continueRetrying(attempts: [0], mode: .backoff, networkDownFor: nil))
+    #expect(continueRetrying(attempts: [0], mode: .backoff, networkDownFor: continueOutageHold - 1))
+    #expect(!continueRetrying(attempts: [0], mode: .backoff, networkDownFor: continueOutageHold))
+    #expect(!continueRetrying(attempts: [8], mode: .backoff, networkDownFor: nil))
+}

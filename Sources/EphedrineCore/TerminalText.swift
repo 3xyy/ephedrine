@@ -127,10 +127,13 @@ public func claudeWorkingVisible(_ text: String) -> Bool {
     let lines = t.split(separator: "\n").map(String.init)
     // "✻ Waiting for 2 background agents to finish" ends a main turn while its
     // agents still run. It's a transcript line that stays on screen after
-    // they're done, so it counts only while nothing Claude printed follows it.
+    // they're done, so it counts only while nothing Claude printed follows it
+    // (an "⎿ Interrupted" included) and Claude Code is still on screen (not
+    // quit back to the shell).
     if let newest = lines.last(where: { l in
-        l.trimmingCharacters(in: .whitespaces).first.map { "✻✶✳✢✽·*⏺●".contains($0) } ?? false
-    }), backgroundAgentsLine.firstMatch(in: newest, range: NSRange(newest.startIndex..., in: newest)) != nil {
+        l.trimmingCharacters(in: .whitespaces).first.map { "✻✶✳✢✽·*⏺●⎿".contains($0) } ?? false
+    }), backgroundAgentsLine.firstMatch(in: newest, range: NSRange(newest.startIndex..., in: newest)) != nil,
+       claudeUIVisible(text) {
         return true
     }
     return lines.contains { s in

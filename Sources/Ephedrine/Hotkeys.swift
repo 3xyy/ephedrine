@@ -7,25 +7,30 @@ import EphedrineCore
 /// A shortcut another app already registered can't be taken: it goes in
 /// `taken` so Settings can say so. Main thread only.
 final class HotkeyCenter {
-    var onPress: ((ShortcutAction) -> Void)?
+    /// The action and when it was pressed (seconds of uptime, as ProcessInfo.systemUptime).
+    var onPress: ((ShortcutAction, TimeInterval) -> Void)?
     private(set) var taken: Set<ShortcutAction> = []
     private var refs: [EventHotKeyRef] = []
     private var handler: EventHandlerRef?
     private var current = ShortcutBindings()
-    private var suspended = false
+    private var suspendedBy: Set<String> = []
+    private var lastLogged = ""
     private static let signature: OSType = 0x45504844   // 'EPHD'
 
     /// Register `bindings`, replacing what was registered before.
     func apply(_ bindings: ShortcutBindings) {
         current = bindings
-        if !suspended { registerAll() }
+        if suspendedBy.isEmpty { registerAll() }
     }
 
-    /// While Settings records a shortcut, none fire, so pressing one records it.
-    func setSuspended(_ on: Bool) {
-        guard on != suspended else { return }
-        suspended = on
-        if on { unregisterAll() } else { registerAll() }
+    /// None fire while Settings records one (pressing it records it) or while
+    /// the menu is open (macOS would hold the press until the menu closes; the
+    /// menu carries them as key equivalents instead).
+    func setSuspended(_ on: Bool, by reason: String) {
+        let was = suspendedBy.isEmpty
+        if on { suspendedBy.insert(reason) } else { suspendedBy.remove(reason) }
+        if was && !suspendedBy.isEmpty { unregisterAll() }
+        if !was && suspendedBy.isEmpty { registerAll() }
     }
 
     private func registerAll() {
@@ -47,7 +52,9 @@ final class HotkeyCenter {
             }
         }
         taken = failed
-        if !on.isEmpty { logLine("shortcuts: " + on.joined(separator: ", ")) }
+        // They're registered again each time the menu closes: log a change only.
+        let line = on.isEmpty ? "shortcuts: none" : "shortcuts: " + on.joined(separator: ", ")
+        if line != lastLogged { lastLogged = line; logLine(line) }
     }
 
     private func unregisterAll() {
@@ -68,10 +75,21 @@ final class HotkeyCenter {
                   Int(id.id) < ShortcutAction.allCases.count else { return OSStatus(eventNotHandledErr) }
             let center = Unmanaged<HotkeyCenter>.fromOpaque(userData).takeUnretainedValue()
             let action = ShortcutAction.allCases[Int(id.id)]
-            DispatchQueue.main.async { center.onPress?(action) }
+            let at = GetEventTime(event)   // seconds since startup, as systemUptime
+            DispatchQueue.main.async { center.onPress?(action, at) }
             return noErr
         }, 1, &spec, me, &handler)
     }
+}
+
+/// The hotkey API's modifiers as AppKit flags (for menu key equivalents).
+func cocoaModifiers(_ m: UInt32) -> NSEvent.ModifierFlags {
+    var f: NSEvent.ModifierFlags = []
+    if m & KeyShortcut.command != 0 { f.insert(.command) }
+    if m & KeyShortcut.shift != 0 { f.insert(.shift) }
+    if m & KeyShortcut.option != 0 { f.insert(.option) }
+    if m & KeyShortcut.control != 0 { f.insert(.control) }
+    return f
 }
 
 /// AppKit modifier flags in the hotkey API's terms.

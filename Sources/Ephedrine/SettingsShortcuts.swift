@@ -21,7 +21,7 @@ struct ShortcutsPane: View {
                         HStack(spacing: 6) {
                             ShortcutRecorder(shortcut: settings.shortcuts.shortcut(for: a),
                                              onChange: { settings.shortcuts.set($0, for: a) },
-                                             onRecording: { controller.hotkeys.setSuspended($0) })
+                                             onRecording: { controller.hotkeys.setSuspended($0, by: "recording") })
                                 .frame(width: 150)
                             Button {
                                 settings.shortcuts.set(nil, for: a)

@@ -149,6 +149,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let afterOurSleep: Bool   // a battery pause slept the Mac and resumed Claude in the last 10 min
         let networkDown: Bool     // no network path: a "continue" would only fail (continueDue)
         let networkBackAt: Date?  // when the last outage ended
+        let networkDownSince: Date?   // the outage going on now
     }
 
     let detectors: [Detector] = [
@@ -216,6 +217,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     var usageView: UsageView?
     let settingsWindow = SettingsWindowController()
     let hotkeys = HotkeyCenter()                     // global shortcuts (Settings › Shortcuts)
+    var menuOpenedAt: TimeInterval?                  // uptimes of the status menu opening and closing
+    var menuClosedAt: TimeInterval?
     let setupWindow = SetupWindowController()
     var iconActive = false                          // last `active` refreshIcon saw (the status card picks its glyph from it)
     var awakeIcons: [MenuBarIconStyle: NSImage] = [:]   // made once per style; refreshIcon runs every tick
@@ -230,7 +233,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         try? fm.createDirectory(atPath: stateDir, withIntermediateDirectories: true)
         tightenStateFolder()
         settings.onChange = { [weak self] key in self?.settingChanged(key) }
-        hotkeys.onPress = { [weak self] in self?.shortcutPressed($0) }
+        hotkeys.onPress = { [weak self] in self?.shortcutPressed($0, at: $1) }
         hotkeys.apply(settings.shortcuts)
         installMainMenu()
         recoverFromInterruptedAway()
@@ -540,7 +543,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
                                   canType: fullyAwake && Date().timeIntervalSince(lastFullWake) > postWakeQuiet,
                                   cmuxCLI: runningCmuxCLI(),
                                   afterOurSleep: Date().timeIntervalSince(claudeResumedAt) < 600,
-                                  networkDown: outage.downSince != nil, networkBackAt: networkBackAt)
+                                  networkDown: outage.downSince != nil, networkBackAt: networkBackAt,
+                                  networkDownSince: outage.downSince)
             continueQueue.async { [weak self] in
                 self?.scanTerminalForErrors(flags)
                 DispatchQueue.main.async { self?.scanning = false }
@@ -601,7 +605,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         }
         endCmuxEpisodes()
         // A retry still to come counts as Claude working (keeps lid-closed mode on).
-        let retrying = continueRetrying(attempts: continueStates.values.map(\.attempts), mode: flags.mode)
+        let retrying = continueRetrying(attempts: continueStates.values.map(\.attempts), mode: flags.mode,
+                                        networkDownFor: flags.networkDownSince.map { now.timeIntervalSince($0) })
         DispatchQueue.main.async { [weak self] in self?.retryPending = retrying }
 
         // Stay awake only for a scheduled wait, never just because limit text
@@ -1131,11 +1136,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     func stepBatteryPause(lidShutAlone: Bool, idle: Double, claudeBusy: Bool, percent: Int?) {
         let pct = percent.map { "\($0)%" } ?? "its limit"
         let ev = batteryPause.step(BatteryPauseInputs(
-            // "Only on the charger" stops on battery at any level: no reserve to keep, so no pause.
-            enabled: settings.batteryPauseClaude && awakeBatteryFloor(settings.batteryFloor) < lidOnlyPluggedIn,
+            // "Only on the charger" stops on battery at any level: no reserve to keep,
+            // so no pause. Nor with keep-awake for Claude off: then Claude isn't ours to stop.
+            enabled: settings.batteryPauseClaude && settings.enabled
+                && awakeBatteryFloor(settings.batteryFloor) < lidOnlyPluggedIn,
             stopped: batteryStop.stopped, onBattery: !onACPower(),
-            lidShutAlone: lidShutAlone, leaving: awayMode, fullyAwake: fullyAwake, idle: idle, awayAfter: effectiveGraceSeconds(),
-            claudeBusy: claudeBusy, now: Date()))
+            lidShutAlone: lidShutAlone, leaving: awayMode, fullyAwake: fullyAwake,
+            displayAsleep: CGDisplayIsAsleep(CGMainDisplayID()) != 0, idle: idle,
+            claudeBusy: claudeBusy, now: Date(), uptime: ProcessInfo.processInfo.systemUptime))
         switch ev {
         case .warnHere?:
             logLine("battery at \(pct) with you at the Mac: Claude keeps working, and is paused once you step away")
@@ -1511,6 +1519,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         quit.target = self
         quit.image = NSImage(systemSymbolName: "power", accessibilityDescription: nil)
         menu.addItem(quit)
+        // The shortcuts as hidden key equivalents: they're suspended while the
+        // menu is open, so the same keys work here (the menu's own one closes it).
+        for a in ShortcutAction.allCases {
+            guard let s = settings.shortcuts.shortcut(for: a), let key = menuKeyEquivalent(s.keyCode) else { continue }
+            let it = NSMenuItem(title: a.label, action: #selector(shortcutMenuItem(_:)), keyEquivalent: key)
+            it.keyEquivalentModifierMask = cocoaModifiers(s.modifiers)
+            it.target = self
+            it.representedObject = a.rawValue
+            it.isHidden = true
+            it.allowsKeyEquivalentWhenHidden = true
+            menu.addItem(it)
+        }
     }
 
     /// Menu item with an action on self.
@@ -1603,8 +1623,38 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
     @objc func toggleEnabled() { settings.enabled.toggle() }
 
-    /// A global shortcut was pressed. Actions with nothing to see on screen say what they did.
-    func shortcutPressed(_ a: ShortcutAction) {
+    /// A global shortcut was pressed. One pressed while the menu was open
+    /// arrives only after it closed; the open menu already handled it.
+    func shortcutPressed(_ a: ShortcutAction, at: TimeInterval) {
+        if pressedWhileMenuWasOpen(at, openedAt: menuOpenedAt, closedAt: menuClosedAt) {
+            logLine("shortcut: \(a.rawValue) pressed while the menu was open, dropped")
+            return
+        }
+        runShortcut(a)
+    }
+
+    /// A shortcut's key equivalent in the open menu. The menu has closed by now,
+    /// which is all the menu's own shortcut asks for.
+    @objc func shortcutMenuItem(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let a = ShortcutAction(rawValue: raw) else { return }
+        if a == .openMenu { logLine("shortcut: openMenu closed the menu"); return }
+        runShortcut(a)
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        guard menu === statusItem.menu else { return }
+        menuOpenedAt = ProcessInfo.processInfo.systemUptime
+        hotkeys.setSuspended(true, by: "menu")
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        guard menu === statusItem.menu else { return }
+        menuClosedAt = ProcessInfo.processInfo.systemUptime
+        hotkeys.setSuspended(false, by: "menu")
+    }
+
+    /// Actions with nothing to see on screen say what they did.
+    func runShortcut(_ a: ShortcutAction) {
         logLine("shortcut: \(a.rawValue)")
         switch a {
         case .openMenu:

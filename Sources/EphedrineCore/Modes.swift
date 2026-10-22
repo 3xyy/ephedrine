@@ -139,8 +139,15 @@ public func continueDue(nextTryAt: Date, startedAt: Date, lastTryAt: Date?,
 
 /// A retry still to come in some error episode, which counts as Claude
 /// working (keeps lid-closed mode on, and "I'm leaving" awake). Off allows no tries.
-public func continueRetrying(attempts: [Int], mode: AutoContinueMode) -> Bool {
-    attempts.contains { $0 < mode.maxAttempts }
+/// While the network is down, a held "continue" keeps the Mac awake only this
+/// long into the outage (the backoff's tries used to run out in about 27
+/// minutes), so Wi-Fi off on a plane can't hold a shut Mac awake to the battery
+/// limit. The try itself still goes out once the network is back.
+public let continueOutageHold: TimeInterval = 30 * 60
+
+public func continueRetrying(attempts: [Int], mode: AutoContinueMode, networkDownFor: TimeInterval? = nil) -> Bool {
+    if let d = networkDownFor, d >= continueOutageHold { return false }
+    return attempts.contains { $0 < mode.maxAttempts }
 }
 
 /// How the menu bar icon is colored.

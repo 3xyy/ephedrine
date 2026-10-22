@@ -236,6 +236,17 @@ private let backgroundAgentScreen = """
         of: line, with: "✻ Waiting for 3 background agents to finish\n\n⏺ Agent \"Profiles plan interfaces summary\" finished · 1m 36s")))
     #expect(!claudeWorkingVisible(backgroundAgentScreen.replacingOccurrences(
         of: line, with: line + "\n\n⏺ Both reviews passed. Task 9 is next.\n\n✻ Baked for 10s · done 4:07 PM")))
+    // Review 2026-10-22: Esc during the wait, or quitting Claude, leaves the
+    // line on screen with nothing Claude-shaped after it.
+    #expect(!claudeWorkingVisible(backgroundAgentScreen.replacingOccurrences(
+        of: line, with: line + "\n  ⎿  Interrupted · What should Claude do instead?")))
+    #expect(!claudeWorkingVisible("""
+    ⏺ The migration and deploy steps are still waiting on you.
+
+    ✻ Waiting for 1 background agent to finish
+
+    uv@mac Scholr % 
+    """))
 }
 
 @Test func usageLimitDetection() {

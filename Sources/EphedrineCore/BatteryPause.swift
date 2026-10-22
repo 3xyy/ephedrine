@@ -28,15 +28,17 @@ public struct BatteryPauseInputs {
     public var lidShutAlone: Bool     // lid shut and no external display
     public var leaving: Bool          // "I'm leaving" is on: the owner said so
     public var fullyAwake: Bool       // systemFullyAwake: false in a nap
+    public var displayAsleep: Bool    // the screen went to sleep (a video or a call keeps it on)
     public var idle: TimeInterval     // HID idle, which leaves out time asleep
-    public var awayAfter: TimeInterval   // idle this long with the lid open = away (the sleep countdown's grace)
-    public var claudeBusy: Bool       // only decides whether there's anything to warn about
+    public var claudeBusy: Bool       // Claude working: what keeps the Mac up with the lid open
     public var now: Date
+    public var uptime: TimeInterval   // ProcessInfo.systemUptime: no time asleep, like `idle`
     public init(enabled: Bool, stopped: Bool, onBattery: Bool, lidShutAlone: Bool, leaving: Bool = false,
-                fullyAwake: Bool, idle: TimeInterval, awayAfter: TimeInterval, claudeBusy: Bool, now: Date) {
+                fullyAwake: Bool, displayAsleep: Bool, idle: TimeInterval, claudeBusy: Bool, now: Date, uptime: TimeInterval) {
         self.enabled = enabled; self.stopped = stopped; self.onBattery = onBattery
-        self.lidShutAlone = lidShutAlone; self.leaving = leaving; self.fullyAwake = fullyAwake; self.idle = idle
-        self.awayAfter = awayAfter; self.claudeBusy = claudeBusy; self.now = now
+        self.lidShutAlone = lidShutAlone; self.leaving = leaving; self.fullyAwake = fullyAwake
+        self.displayAsleep = displayAsleep; self.idle = idle; self.claudeBusy = claudeBusy
+        self.now = now; self.uptime = uptime
     }
 }
 
@@ -46,12 +48,13 @@ public struct BatteryPause: Equatable {
     public static let backAfter: TimeInterval = 15
     /// Idle under this, awake with the lid open: the owner is back.
     public static let backIdle: TimeInterval = 5
-    /// Away with the lid open takes at least this much idle, whatever the
-    /// countdown says (it can be 15 seconds: reading a reply isn't leaving).
+    /// Away with the lid open also takes at least this much idle (the screen
+    /// may have been turned off by hand, a hot corner, say).
     public static let minAwayAfter: TimeInterval = 120
 
     public private(set) var paused = false
     public private(set) var pausedAt: Date?
+    private var pausedUptime: TimeInterval = 0
     public private(set) var headsUpAt: Date?
     private var warned = false
     public init() {}
@@ -62,7 +65,11 @@ public struct BatteryPause: Equatable {
         if paused {
             if !i.onBattery { return resume(.pluggedIn) }
             if !i.enabled { return resume(.turnedOff) }
+            // Back = input since the pause: idle shorter than the awake time since.
+            // After "I'm leaving" idle stood at seconds, and it leaves out sleep,
+            // so a full wake alone looked like a return (review 2026-10-22).
             if i.fullyAwake, !i.lidShutAlone, !i.leaving, i.idle < Self.backIdle,
+               i.idle < i.uptime - pausedUptime,
                let at = pausedAt, i.now.timeIntervalSince(at) >= Self.backAfter { return resume(.back) }
             return nil
         }
@@ -70,19 +77,22 @@ public struct BatteryPause: Equatable {
         guard i.enabled, i.stopped, i.onBattery else { headsUpAt = nil; return nil }
         // Lid shut: away, even in a nap (Claude would run in every one).
         // "I'm leaving" too: it sleeps the Mac a minute after Claude stops needing it.
-        if i.lidShutAlone || i.leaving { return pause(i.now) }
+        if i.lidShutAlone || i.leaving { return pause(i) }
         guard i.fullyAwake else { headsUpAt = nil; return nil }
-        if i.idle >= max(i.awayAfter, Self.minAwayAfter) {
+        // Lid open: away once the screen has gone to sleep by itself, and only
+        // while Claude is what keeps the Mac up. A video or a call keeps the
+        // screen on, and with Claude idle macOS sleeps by itself (review 2026-10-22).
+        if i.displayAsleep && i.idle >= Self.minAwayAfter && i.claudeBusy {
             guard let h = headsUpAt else { headsUpAt = i.now; return .headsUp }
-            return i.now.timeIntervalSince(h) >= Self.headsUpDelay ? pause(i.now) : nil
+            return i.now.timeIntervalSince(h) >= Self.headsUpDelay ? pause(i) : nil
         }
         if headsUpAt != nil { headsUpAt = nil; return .cancelled }
         if i.claudeBusy && !warned { warned = true; return .warnHere }
         return nil
     }
 
-    private mutating func pause(_ now: Date) -> BatteryPauseEvent {
-        paused = true; pausedAt = now; headsUpAt = nil
+    private mutating func pause(_ i: BatteryPauseInputs) -> BatteryPauseEvent {
+        paused = true; pausedAt = i.now; pausedUptime = i.uptime; headsUpAt = nil
         return .pauseAndSleep
     }
 
@@ -138,12 +148,22 @@ public func claudePausePlan(procs: [ProcEntry], info: [Int32: ProcText], selfPID
     let tree = descendants(of: roots.map(\.pid), in: walkable)
     let inTree = Set(tree.map(\.pid))
     let byPID = Dictionary(walkable.map { ($0.pid, $0) }, uniquingKeysWith: { a, _ in a })
+    // Every shell above a session, not only its parent: zsh → a wrapper
+    // script → claude would otherwise see the wrapper (its job) stop.
     var shells: [ProcEntry] = []
     for r in roots {
-        guard let parent = byPID[r.ppid], !inTree.contains(parent.pid),
-              let text = info[parent.pid], isJobControlShell(text.comm),
-              !shells.contains(parent) else { continue }
-        shells.append(parent)
+        var cur = r
+        while let parent = byPID[cur.ppid], parent.pid != cur.pid, !inTree.contains(parent.pid),
+              let text = info[parent.pid], isJobControlShell(text.comm) {
+            if !shells.contains(parent) { shells.append(parent) }
+            cur = parent
+        }
     }
-    return tree + shells
+    // Innermost first, so the outermost is stopped first and resumed last.
+    func depth(_ p: ProcEntry) -> Int {
+        var d = 0, cur = p
+        while let up = byPID[cur.ppid], up.pid != cur.pid, d < 64 { d += 1; cur = up }
+        return d
+    }
+    return tree + shells.sorted { depth($0) > depth($1) }
 }

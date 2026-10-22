@@ -28,27 +28,11 @@ private let at = { (t: TimeInterval) in Date(timeIntervalSince1970: t) }
 // ── Pausing Claude at the battery limit ──
 
 private func bp(enabled: Bool = true, stopped: Bool = true, onBattery: Bool = true, lidShut: Bool = false,
-                leaving: Bool = false, awake: Bool = true, idle: TimeInterval = 0, awayAfter: TimeInterval = 300,
-                busy: Bool = true, t: TimeInterval) -> BatteryPauseInputs {
+                leaving: Bool = false, awake: Bool = true, displayAsleep: Bool = true, idle: TimeInterval = 0,
+                busy: Bool = true, t: TimeInterval, uptime: TimeInterval? = nil) -> BatteryPauseInputs {
     BatteryPauseInputs(enabled: enabled, stopped: stopped, onBattery: onBattery, lidShutAlone: lidShut, leaving: leaving,
-                       fullyAwake: awake, idle: idle, awayAfter: awayAfter, claudeBusy: busy, now: at(t))
-}
-
-@Test func aShortCountdownDoesNotMakeReadingCountAsAway() {
-    // The countdown can be 15 seconds; reading Claude's reply that long isn't leaving.
-    var p = BatteryPause()
-    #expect(p.step(bp(idle: 30, awayAfter: 15, t: 0)) == .warnHere)
-    #expect(p.step(bp(idle: BatteryPause.minAwayAfter, awayAfter: 15, t: 3)) == .headsUp)
-}
-
-@Test func imLeavingCountsAsAway() {
-    // "I'm leaving" sleeps the Mac a minute after Claude stops needing it, so
-    // at the limit Claude must be paused at once, not after the idle wait.
-    var p = BatteryPause()
-    #expect(p.step(bp(leaving: true, idle: 2, t: 0)) == .pauseAndSleep)
-    // Back is when "I'm leaving" has ended, or the next tick would pause again.
-    #expect(p.step(bp(leaving: true, idle: 1, t: 600)) == nil)
-    #expect(p.step(bp(leaving: false, idle: 1, t: 601)) == .resume(.back))
+                       fullyAwake: awake, displayAsleep: displayAsleep, idle: idle, claudeBusy: busy,
+                       now: at(t), uptime: uptime ?? t)
 }
 
 @Test func atTheLimitWithTheLidShutClaudeIsPausedAndTheMacSleeps() {
@@ -61,27 +45,45 @@ private func bp(enabled: Bool = true, stopped: Bool = true, onBattery: Bool = tr
 
 @Test func atTheLimitWithTheOwnerThereItOnlySaysSo() {
     var p = BatteryPause()
-    #expect(p.step(bp(idle: 2, t: 0)) == .warnHere)
-    #expect(p.step(bp(idle: 2, t: 3)) == nil)                         // once
+    #expect(p.step(bp(displayAsleep: false, idle: 2, t: 0)) == .warnHere)
+    #expect(p.step(bp(displayAsleep: false, idle: 2, t: 3)) == nil)            // once
     #expect(!p.paused)
     var idle = BatteryPause()
-    #expect(idle.step(bp(idle: 2, busy: false, t: 0)) == nil)        // no Claude working, nothing to say
+    #expect(idle.step(bp(displayAsleep: false, idle: 2, busy: false, t: 0)) == nil)   // no Claude working, nothing to say
 }
 
 @Test func walkingAwayWithTheLidOpenGetsAHeadsUpThenThePause() {
+    // Away with the lid open is the screen having gone to sleep by itself.
     var p = BatteryPause()
-    #expect(p.step(bp(idle: 299, t: 0)) == .warnHere)
-    #expect(p.step(bp(idle: 300, t: 1)) == .headsUp)
-    #expect(p.step(bp(idle: 300 + BatteryPause.headsUpDelay - 1, t: 1 + BatteryPause.headsUpDelay - 1)) == nil)
-    #expect(p.step(bp(idle: 300 + BatteryPause.headsUpDelay, t: 1 + BatteryPause.headsUpDelay)) == .pauseAndSleep)
+    #expect(p.step(bp(displayAsleep: false, idle: 600, t: 0)) == .warnHere)
+    #expect(p.step(bp(idle: 600, t: 1)) == .headsUp)
+    #expect(p.step(bp(idle: 600, t: 1 + BatteryPause.headsUpDelay - 1)) == nil)
+    #expect(p.step(bp(idle: 600, t: 1 + BatteryPause.headsUpDelay)) == .pauseAndSleep)
     #expect(p.paused)
+}
+
+@Test func aVideoOrACallIsNotAway() {
+    // Review 2026-10-22: two idle minutes slept a Mac playing a video. A player
+    // or a call keeps the screen on, so the owner counts as there.
+    var p = BatteryPause()
+    #expect(p.step(bp(displayAsleep: false, idle: 3600, t: 0)) == .warnHere)
+    #expect(p.step(bp(displayAsleep: false, idle: 3600, t: 600)) == nil)
+    #expect(!p.paused)
+}
+
+@Test func withNoClaudeWorkingTheLidOpenPathLeavesSleepToMacOS() {
+    // Claude idle holds nothing awake, so macOS sleeps by itself; don't force it.
+    var p = BatteryPause()
+    #expect(p.step(bp(idle: 3600, busy: false, t: 0)) == nil)
+    #expect(p.step(bp(idle: 3600, busy: false, t: 60)) == nil)
+    #expect(!p.paused)
 }
 
 @Test func touchingTheMacDuringTheHeadsUpCancelsIt() {
     var p = BatteryPause()
     #expect(p.step(bp(idle: 400, t: 0)) == .headsUp)
-    #expect(p.step(bp(idle: 1, t: 5)) == .cancelled)
-    #expect(p.step(bp(idle: 2, t: 6)) == .warnHere)
+    #expect(p.step(bp(displayAsleep: false, idle: 1, t: 5)) == .cancelled)
+    #expect(p.step(bp(displayAsleep: false, idle: 2, t: 6)) == .warnHere)
     #expect(!p.paused)
 }
 
@@ -91,6 +93,12 @@ private func bp(enabled: Bool = true, stopped: Bool = true, onBattery: Bool = tr
     #expect(p.step(bp(awake: false, idle: 9000, t: 0)) == nil)
     // With the lid shut it pauses even in a nap: Claude would run in every one.
     #expect(p.step(bp(lidShut: true, awake: false, idle: 9000, t: 3)) == .pauseAndSleep)
+}
+
+@Test func aScreenTurnedOffByHandNeedsTwoIdleMinutesToo() {
+    var p = BatteryPause()
+    #expect(p.step(bp(idle: 30, t: 0)) == .warnHere)
+    #expect(p.step(bp(idle: BatteryPause.minAwayAfter, t: 3)) == .headsUp)
 }
 
 @Test func pluggingInOrComingBackResumesClaude() {
@@ -108,8 +116,20 @@ private func bp(enabled: Bool = true, stopped: Bool = true, onBattery: Bool = tr
     var r = BatteryPause()
     _ = r.step(bp(idle: 400, t: 0)); _ = r.step(bp(idle: 410, t: 10))
     #expect(r.paused)
-    #expect(r.step(bp(idle: 1, t: 10 + BatteryPause.backAfter - 1)) == nil)          // the moment it paused
-    #expect(r.step(bp(idle: 1, t: 10 + BatteryPause.backAfter)) == .resume(.back))
+    #expect(r.step(bp(displayAsleep: false, idle: 1, t: 10 + BatteryPause.backAfter - 1)) == nil)   // the moment it paused
+    #expect(r.step(bp(displayAsleep: false, idle: 1, t: 10 + BatteryPause.backAfter)) == .resume(.back))
+}
+
+@Test func aWakeWithNobodyThereDoesNotResume() {
+    // Review 2026-10-22: after "I'm leaving" the idle clock stood at ~3 s, and
+    // idle leaves out time asleep, so a full wake later looked like a return.
+    var p = BatteryPause()
+    #expect(p.step(bp(leaving: true, idle: 3, t: 0, uptime: 1000)) == .pauseAndSleep)
+    // Hours later, a full wake with the lid open, "I'm leaving" over, 1 s
+    // awake and no input: idle reads 4 s, under the 5 s that means "back".
+    #expect(p.step(bp(displayAsleep: false, idle: 4, t: 20000, uptime: 1001)) == nil)
+    // Someone touched it.
+    #expect(p.step(bp(displayAsleep: false, idle: 1, t: 20003, uptime: 1004)) == .resume(.back))
 }
 
 @Test func turningTheSettingOffResumesAndStopsIt() {
@@ -125,6 +145,16 @@ private func bp(enabled: Bool = true, stopped: Bool = true, onBattery: Bool = tr
     var p = BatteryPause()
     #expect(p.step(bp(stopped: false, lidShut: true, idle: 9000, t: 0)) == nil)
     #expect(p.step(bp(stopped: false, idle: 2, t: 3)) == nil)
+}
+
+@Test func imLeavingCountsAsAway() {
+    // "I'm leaving" sleeps the Mac a minute after Claude stops needing it, so
+    // at the limit Claude must be paused at once, not after the idle wait.
+    var p = BatteryPause()
+    #expect(p.step(bp(leaving: true, idle: 2, t: 0)) == .pauseAndSleep)
+    // Back is when "I'm leaving" has ended, or the next tick would pause again.
+    #expect(p.step(bp(leaving: true, idle: 1, t: 600, uptime: 600)) == nil)
+    #expect(p.step(bp(leaving: false, idle: 1, t: 601, uptime: 601)) == .resume(.back))
 }
 
 // ── What gets paused ──
@@ -177,6 +207,21 @@ private var info: [Int32: ProcText] { Dictionary(uniqueKeysWithValues: table.map
     #expect(plan.firstIndex(of: 15423)! < plan.firstIndex(of: 40002)!)       // parents before children
     // Never the desktop app, the browser's host, cmux, launchd or Ephedrine's own watchdog.
     #expect(Set(plan).isDisjoint(with: [50000, 20854, 20777, 50100, 15072, 1, 60000, 60001]))
+}
+
+@Test func everyShellAboveASessionIsStoppedOutermostFirst() {
+    // Review 2026-10-22: zsh → a wrapper script (bash) → claude. Stopping only
+    // the wrapper makes zsh see its job stop, the failure the order prevents.
+    let wrapped: [(pid: Int32, ppid: Int32, comm: String, args: String)] = [
+        (70000, 1, "/usr/bin/login", "login"),
+        (70001, 70000, "-/bin/zsh", "-/bin/zsh"),
+        (70002, 70001, "/bin/bash", "bash /Users/uv/bin/cc"),
+        (70003, 70002, "/Users/uv/.local/bin/claude", "/Users/uv/.local/bin/claude"),
+    ]
+    let ps = wrapped.map { ProcEntry(pid: $0.pid, ppid: $0.ppid, start: 1) }
+    let inf = Dictionary(uniqueKeysWithValues: wrapped.map { ($0.pid, ProcText(comm: $0.comm, args: $0.args)) })
+    // stopRecorded stops back to front: zsh, then bash, then claude; resume runs front to back.
+    #expect(claudePausePlan(procs: ps, info: inf, selfPID: 1).map(\.pid) == [70003, 70002, 70001])
 }
 
 @Test func ashellIsOnlyAddedAboveASession() {
