@@ -26,15 +26,16 @@ public struct BatteryPauseInputs {
     public var stopped: Bool          // BatteryStop.stopped: on battery at the limit
     public var onBattery: Bool
     public var lidShutAlone: Bool     // lid shut and no external display
+    public var leaving: Bool          // "I'm leaving" is on: the owner said so
     public var fullyAwake: Bool       // systemFullyAwake: false in a nap
     public var idle: TimeInterval     // HID idle, which leaves out time asleep
     public var awayAfter: TimeInterval   // idle this long with the lid open = away (the sleep countdown's grace)
     public var claudeBusy: Bool       // only decides whether there's anything to warn about
     public var now: Date
-    public init(enabled: Bool, stopped: Bool, onBattery: Bool, lidShutAlone: Bool, fullyAwake: Bool,
-                idle: TimeInterval, awayAfter: TimeInterval, claudeBusy: Bool, now: Date) {
+    public init(enabled: Bool, stopped: Bool, onBattery: Bool, lidShutAlone: Bool, leaving: Bool = false,
+                fullyAwake: Bool, idle: TimeInterval, awayAfter: TimeInterval, claudeBusy: Bool, now: Date) {
         self.enabled = enabled; self.stopped = stopped; self.onBattery = onBattery
-        self.lidShutAlone = lidShutAlone; self.fullyAwake = fullyAwake; self.idle = idle
+        self.lidShutAlone = lidShutAlone; self.leaving = leaving; self.fullyAwake = fullyAwake; self.idle = idle
         self.awayAfter = awayAfter; self.claudeBusy = claudeBusy; self.now = now
     }
 }
@@ -45,6 +46,9 @@ public struct BatteryPause: Equatable {
     public static let backAfter: TimeInterval = 15
     /// Idle under this, awake with the lid open: the owner is back.
     public static let backIdle: TimeInterval = 5
+    /// Away with the lid open takes at least this much idle, whatever the
+    /// countdown says (it can be 15 seconds: reading a reply isn't leaving).
+    public static let minAwayAfter: TimeInterval = 120
 
     public private(set) var paused = false
     public private(set) var pausedAt: Date?
@@ -58,16 +62,17 @@ public struct BatteryPause: Equatable {
         if paused {
             if !i.onBattery { return resume(.pluggedIn) }
             if !i.enabled { return resume(.turnedOff) }
-            if i.fullyAwake, !i.lidShutAlone, i.idle < Self.backIdle,
+            if i.fullyAwake, !i.lidShutAlone, !i.leaving, i.idle < Self.backIdle,
                let at = pausedAt, i.now.timeIntervalSince(at) >= Self.backAfter { return resume(.back) }
             return nil
         }
         if !i.stopped { warned = false }
         guard i.enabled, i.stopped, i.onBattery else { headsUpAt = nil; return nil }
         // Lid shut: away, even in a nap (Claude would run in every one).
-        if i.lidShutAlone { return pause(i.now) }
+        // "I'm leaving" too: it sleeps the Mac a minute after Claude stops needing it.
+        if i.lidShutAlone || i.leaving { return pause(i.now) }
         guard i.fullyAwake else { headsUpAt = nil; return nil }
-        if i.idle >= i.awayAfter {
+        if i.idle >= max(i.awayAfter, Self.minAwayAfter) {
             guard let h = headsUpAt else { headsUpAt = i.now; return .headsUp }
             return i.now.timeIntervalSince(h) >= Self.headsUpDelay ? pause(i.now) : nil
         }

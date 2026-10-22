@@ -28,9 +28,27 @@ private let at = { (t: TimeInterval) in Date(timeIntervalSince1970: t) }
 // ── Pausing Claude at the battery limit ──
 
 private func bp(enabled: Bool = true, stopped: Bool = true, onBattery: Bool = true, lidShut: Bool = false,
-                awake: Bool = true, idle: TimeInterval = 0, busy: Bool = true, t: TimeInterval) -> BatteryPauseInputs {
-    BatteryPauseInputs(enabled: enabled, stopped: stopped, onBattery: onBattery, lidShutAlone: lidShut,
-                       fullyAwake: awake, idle: idle, awayAfter: 300, claudeBusy: busy, now: at(t))
+                leaving: Bool = false, awake: Bool = true, idle: TimeInterval = 0, awayAfter: TimeInterval = 300,
+                busy: Bool = true, t: TimeInterval) -> BatteryPauseInputs {
+    BatteryPauseInputs(enabled: enabled, stopped: stopped, onBattery: onBattery, lidShutAlone: lidShut, leaving: leaving,
+                       fullyAwake: awake, idle: idle, awayAfter: awayAfter, claudeBusy: busy, now: at(t))
+}
+
+@Test func aShortCountdownDoesNotMakeReadingCountAsAway() {
+    // The countdown can be 15 seconds; reading Claude's reply that long isn't leaving.
+    var p = BatteryPause()
+    #expect(p.step(bp(idle: 30, awayAfter: 15, t: 0)) == .warnHere)
+    #expect(p.step(bp(idle: BatteryPause.minAwayAfter, awayAfter: 15, t: 3)) == .headsUp)
+}
+
+@Test func imLeavingCountsAsAway() {
+    // "I'm leaving" sleeps the Mac a minute after Claude stops needing it, so
+    // at the limit Claude must be paused at once, not after the idle wait.
+    var p = BatteryPause()
+    #expect(p.step(bp(leaving: true, idle: 2, t: 0)) == .pauseAndSleep)
+    // Back is when "I'm leaving" has ended, or the next tick would pause again.
+    #expect(p.step(bp(leaving: true, idle: 1, t: 600)) == nil)
+    #expect(p.step(bp(leaving: false, idle: 1, t: 601)) == .resume(.back))
 }
 
 @Test func atTheLimitWithTheLidShutClaudeIsPausedAndTheMacSleeps() {

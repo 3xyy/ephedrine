@@ -1090,7 +1090,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             // "Only on the charger" stops on battery at any level: no reserve to keep, so no pause.
             enabled: settings.batteryPauseClaude && awakeBatteryFloor(settings.batteryFloor) < lidOnlyPluggedIn,
             stopped: batteryStop.stopped, onBattery: !onACPower(),
-            lidShutAlone: lidShutAlone, fullyAwake: fullyAwake, idle: idle, awayAfter: effectiveGraceSeconds(),
+            lidShutAlone: lidShutAlone, leaving: awayMode, fullyAwake: fullyAwake, idle: idle, awayAfter: effectiveGraceSeconds(),
             claudeBusy: claudeBusy, now: Date()))
         switch ev {
         case .warnHere?:
