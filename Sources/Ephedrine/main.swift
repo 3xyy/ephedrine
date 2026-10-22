@@ -147,6 +147,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let canType: Bool   // false while asleep / in a dark wake / just after waking
         let cmuxCLI: String?   // the running cmux's CLI, nil when cmux isn't running
         let afterOurSleep: Bool   // a battery pause slept the Mac and resumed Claude in the last 10 min
+        let networkDown: Bool     // no network path: a "continue" would only fail (continueDue)
+        let networkBackAt: Date?  // when the last outage ended
     }
 
     let detectors: [Detector] = [
@@ -194,7 +196,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
     // Claude usage (fetched from Anthropic with the keychain OAuth token)
     var usageLimits: [UsageLimit] = []
-    var usageAlerts = UsageAlertTracker()
+    /// What usage alerts went out, kept across launches (a relaunch re-sent them all, 2026-10-18).
+    var usageAlerts: UsageAlertTracker = {
+        guard let d = UserDefaults.standard.data(forKey: "usageAlertState"),
+              let t = try? JSONDecoder().decode(UsageAlertTracker.self, from: d) else { return UsageAlertTracker() }
+        return t
+    }() {
+        didSet {
+            if usageAlerts != oldValue, let d = try? JSONEncoder().encode(usageAlerts) {
+                UserDefaults.standard.set(d, forKey: "usageAlertState")
+            }
+        }
+    }
+    var cmuxPasswordNotice = UnreadableNotice()      // main thread
+    var networkBackAt: Date?                         // main thread: the last outage's end (ScanFlags)
     var usageError = false
     var usageFetching = false
     var lastUsageFetch: Date?
@@ -521,7 +536,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
                                   watchWorking: settings.keepAwakeClaudeWorking,
                                   canType: fullyAwake && Date().timeIntervalSince(lastFullWake) > postWakeQuiet,
                                   cmuxCLI: runningCmuxCLI(),
-                                  afterOurSleep: Date().timeIntervalSince(claudeResumedAt) < 600)
+                                  afterOurSleep: Date().timeIntervalSince(claudeResumedAt) < 600,
+                                  networkDown: outage.downSince != nil, networkBackAt: networkBackAt)
             continueQueue.async { [weak self] in
                 self?.scanTerminalForErrors(flags)
                 DispatchQueue.main.async { self?.scanning = false }
@@ -600,6 +616,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let gap = outage.step(satisfied: ok, now: Date())
         if !ok { if !wasDown { logLine("network down") }; return }
         guard let gap else { return }
+        networkBackAt = Date()
         logLine("network back after \(Int(gap.rounded()))s")
         guard shouldNudge(gap: gap, threshold: settings.outageNudgeSeconds, targets: settings.tmuxTargets,
                           awake: fullyAwake, downSince: downSince, lastSleep: lastWillSleep) else {
@@ -647,11 +664,19 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
                 logLine("auto-continue: error detected on \(tab.key), first try in \(Int(flags.mode.delay(0)))s")
             }
             var st = continueStates[tab.key]
-                ?? AutoContinueState(attempts: 0, nextTryAt: now.addingTimeInterval(flags.mode.delay(0)), lastErrorAt: now)
+                ?? AutoContinueState(attempts: 0, nextTryAt: now.addingTimeInterval(flags.mode.delay(0)), lastErrorAt: now, startedAt: now)
             st.lastErrorAt = now
-            if now >= st.nextTryAt && st.attempts < flags.mode.maxAttempts && cmuxScan.stuck.contains(tab.key) {
+            // No network: hold the try, uncounted. Back: try once it settles, not at the next slot.
+            let due = continueDue(nextTryAt: st.nextTryAt, startedAt: st.startedAt, lastTryAt: st.lastTryAt,
+                                  networkDown: flags.networkDown, networkBackAt: flags.networkBackAt, now: now)
+            let waitNote = "waiting for the network to come back"
+            if flags.networkDown && st.attempts < flags.mode.maxAttempts && errorSkipLogged[tab.key] != waitNote {
+                errorSkipLogged[tab.key] = waitNote
+                logLine("auto-continue: \(waitNote) before answering the error on \(tab.key)")
+            }
+            if due && st.attempts < flags.mode.maxAttempts && cmuxScan.stuck.contains(tab.key) {
                 st.attempts = flags.mode.maxAttempts   // typing changed nothing there: done with this error (logged then)
-            } else if now >= st.nextTryAt && st.attempts < flags.mode.maxAttempts {
+            } else if due && st.attempts < flags.mode.maxAttempts {
                 let result = sendToTab("continue", tab.source, trigger: flags.afterOurSleep ? .apiErrorAfterOurSleep : .apiError,
                                        canTypeNow: canTypeNow)
                 // Not awake: nothing typed or counted, it tries again next scan. A skip ends the episode (continueAfterTry).
@@ -662,6 +687,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
                 if step.stuck { cmuxScan.stuck.insert(tab.key) }
                 switch result {
                 case .typed:
+                    st.lastTryAt = now
                     logLine("auto-continue #\(st.attempts) → \(tab.key)")
                     noteCmuxTyped(tab.key, screen: tab.text)
                 case .skipped(let why):
@@ -816,6 +842,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     }
     func userNotificationCenter(_ c: UNUserNotificationCenter, didReceive resp: UNNotificationResponse,
                                 withCompletionHandler done: @escaping () -> Void) {
+        if resp.notification.request.identifier == "ka_cmuxpassword" {
+            settingsWindow.show(settings: settings, controller: self, pane: .claude)
+        }
         if resp.actionIdentifier == "STAY_AWAKE" {
             cancelPendingSleep()
             armed = false
@@ -1077,6 +1106,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     func batteryNotify(_ t: String, _ b: String, id: String = "ka_battery") {
         let c = UNMutableNotificationContent(); c.title = t; c.body = b
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: id, content: c, trigger: nil))
+    }
+
+    /// Tell the owner once when the cmux password stops being readable
+    /// (UnreadableNotice): until it's saved again nothing in cmux is watched.
+    func noteCmuxPassword(_ saved: CmuxSavedPassword) {
+        var unreadable = false
+        if case .unreadable = saved { unreadable = true }
+        guard cmuxPasswordNotice.step(unreadable: unreadable) else { return }
+        let c = UNMutableNotificationContent()
+        c.title = "Ephedrine can't watch cmux"
+        c.body = "It can't read the cmux password you saved (this happens after an update), so it isn't watching your cmux panes or typing “continue” there. Click to open Settings and save it again."
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ka_cmuxpassword", content: c, trigger: nil))
     }
 
     // MARK: Battery pause (BatteryPause)

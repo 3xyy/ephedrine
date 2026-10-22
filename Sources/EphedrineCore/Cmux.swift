@@ -285,3 +285,20 @@ public func cmuxStatusText(installed: Bool, running: Bool, password: CmuxSavedPa
     case .ok: return "Connected, \(panes) pane\(panes == 1 ? "" : "s")"
     }
 }
+
+/// Says once when a saved secret stops being readable, then not again until it
+/// has been readable in between. macOS ties a keychain item to the app's
+/// signature, so a rebuild or an upgrade can lock Ephedrine out of the cmux
+/// password; on 2026-10-22 it went unread for 14 hours with only a log line.
+public struct UnreadableNotice: Equatable {
+    private var told = false
+    public init() {}
+
+    /// True when it's time to tell the owner.
+    public mutating func step(unreadable: Bool) -> Bool {
+        guard unreadable else { told = false; return false }
+        if told { return false }
+        told = true
+        return true
+    }
+}

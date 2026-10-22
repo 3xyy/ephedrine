@@ -196,7 +196,7 @@ extension AppController {
             return ([], nothing)
         }
         let (pw, saved) = CmuxKeychain.read()
-        DispatchQueue.main.async { [weak self] in self?.cmuxSeen.password = saved }
+        DispatchQueue.main.async { [weak self] in self?.cmuxSeen.password = saved; self?.noteCmuxPassword(saved) }
         guard let pw else {
             forgetCmuxTabs()
             if case .unreadable(let s) = saved {

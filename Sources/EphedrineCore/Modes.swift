@@ -119,6 +119,24 @@ public func continueAfterTry(_ result: ContinueTry, attempts: Int, nextTryAt: Da
     }
 }
 
+/// How long after the network comes back the held "continue" goes out.
+public let continueAfterNetworkBack: TimeInterval = 10
+
+/// Whether an error episode's next "continue" is due. While the network is
+/// down it would only fail again after Claude Code's own retries and use up a
+/// try, so nothing is due. Once it's back and has settled, one try is due at
+/// once if the outage ended after this episode began and after its last try,
+/// not at the backoff's next slot (up to 5 minutes later); then the backoff
+/// goes on. 2026-10-22: Wi-Fi down 08:09 to 08:30, the error at 08:17.
+public func continueDue(nextTryAt: Date, startedAt: Date, lastTryAt: Date?,
+                        networkDown: Bool, networkBackAt: Date?, now: Date) -> Bool {
+    if networkDown { return false }
+    if let back = networkBackAt, now < back.addingTimeInterval(continueAfterNetworkBack) { return false }
+    if now >= nextTryAt { return true }
+    guard let back = networkBackAt else { return false }
+    return back > max(startedAt, lastTryAt ?? .distantPast)
+}
+
 /// A retry still to come in some error episode, which counts as Claude
 /// working (keeps lid-closed mode on, and "I'm leaving" awake). Off allows no tries.
 public func continueRetrying(attempts: [Int], mode: AutoContinueMode) -> Bool {

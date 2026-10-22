@@ -482,15 +482,42 @@ private func json(_ s: String) -> [String: Any] {
     #expect(t.check(a, threshold: 0).isEmpty)
 }
 
-@Test func usageAlertRefiresOnNewWindowOrRecrossing() {
+@Test func usageAlertOncePerWindow() {
     var t = UsageAlertTracker()
     let w1 = [UsageLimit(key: "s", label: "S", percent: 90, resetsAt: Date(timeIntervalSince1970: 1000))]
     let w2 = [UsageLimit(key: "s", label: "S", percent: 90, resetsAt: Date(timeIntervalSince1970: 20000))]
-    let low = [UsageLimit(key: "s", label: "S", percent: 5, resetsAt: Date(timeIntervalSince1970: 20000))]
+    let low = [UsageLimit(key: "s", label: "S", percent: 79, resetsAt: Date(timeIntervalSince1970: 20000))]
     #expect(t.check(w1, threshold: 80).count == 1)
     #expect(t.check(w2, threshold: 80).count == 1)   // new window, still above
+    // Hovering at the line in the same window: you already know.
     #expect(t.check(low, threshold: 80).isEmpty)
-    #expect(t.check(w2, threshold: 80).count == 1)   // crossed again
+    #expect(t.check(w2, threshold: 80).isEmpty)
+    // A reset that moves by minutes is the same window.
+    let shifted = [UsageLimit(key: "s", label: "S", percent: 91, resetsAt: Date(timeIntervalSince1970: 20000 + 600))]
+    #expect(t.check(shifted, threshold: 80).isEmpty)
+}
+
+@Test func usageAlertWithoutAResetTimeFiresOncePerCrossing() {
+    var t = UsageAlertTracker()
+    let high = [UsageLimit(key: "s", label: "S", percent: 90, resetsAt: nil)]
+    let low = [UsageLimit(key: "s", label: "S", percent: 10, resetsAt: nil)]
+    #expect(t.check(high, threshold: 80).count == 1)
+    #expect(t.check(high, threshold: 80).isEmpty)
+    #expect(t.check(low, threshold: 80).isEmpty)
+    #expect(t.check(high, threshold: 80).count == 1)
+}
+
+@Test func usageAlertIsNotRepeatedAfterARelaunch() throws {
+    // 2026-10-18: each of 21 launches re-sent "Fable only 80%" (and Weekly),
+    // because what had been sent lived only in memory.
+    var t = UsageAlertTracker()
+    let now = [UsageLimit(key: "weekly_all", label: "Weekly · all models", percent: 85, resetsAt: Date(timeIntervalSince1970: 50000)),
+               UsageLimit(key: "weekly:Fable", label: "Fable only", percent: 80, resetsAt: Date(timeIntervalSince1970: 50000))]
+    #expect(t.check(now, threshold: 80).count == 2)
+    var relaunched = try JSONDecoder().decode(UsageAlertTracker.self, from: JSONEncoder().encode(t))
+    #expect(relaunched.check(now, threshold: 80).isEmpty)
+    let nextWeek = now.map { UsageLimit(key: $0.key, label: $0.label, percent: 81, resetsAt: Date(timeIntervalSince1970: 50000 + 7 * 86400)) }
+    #expect(relaunched.check(nextWeek, threshold: 80).count == 2)
 }
 
 // ── Process-list classifiers ──

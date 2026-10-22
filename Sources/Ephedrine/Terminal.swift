@@ -3,7 +3,11 @@ import EphedrineCore
 
 // ── Reading & typing into Terminal.app (auto-continue / limit-resume) ──
 
-struct AutoContinueState { var attempts: Int; var nextTryAt: Date; var lastErrorAt: Date }
+struct AutoContinueState {
+    var attempts: Int; var nextTryAt: Date; var lastErrorAt: Date
+    var startedAt: Date          // first seen (continueDue)
+    var lastTryAt: Date? = nil   // last "continue" typed
+}
 
 /// One tab's usage-limit wall, from first sighting until the limit text
 /// leaves the screen.

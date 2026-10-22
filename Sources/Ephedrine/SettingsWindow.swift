@@ -65,7 +65,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private let clock = SettingsClock()
     private let ui = SettingsUI()
 
-    func show(settings: AppSettings, controller: AppController) {
+    func show(settings: AppSettings, controller: AppController, pane: SettingsPane? = nil) {
+        if let pane { ui.pane = pane }
         if window == nil {
             let host = NSHostingController(rootView: SettingsView(settings: settings, controller: controller, clock: clock, ui: ui))
             host.sizingOptions = []   // the window's sizes below rule, not the view's (it would add the title bar to the minimum)

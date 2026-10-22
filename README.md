@@ -58,14 +58,14 @@ Optional. Close the lid and Claude keeps going. A minute after it finishes, the 
 
 Optional, for Terminal.app and cmux.
 
-- Types `continue` when a session stops on an API error.
+- Types `continue` when a session stops on an API error. If the network is down it waits for it to come back, then types it within seconds.
 - Waits out a usage limit that resets within 6 hours and resumes after it. On battery it only stays awake for the last hour with the lid open, but if you close the lid while you're at the Mac it holds the wait until the reset.
 - Notices Claude working on screen when no hook fires.
-- cmux needs one extra step, described in the [cmux](#cmux) section.
+- cmux needs one extra step, described in the [cmux](#cmux) section. If Ephedrine can't read the cmux password you saved (an update can lock it out), it tells you once.
 
 ### Usage meter
 
-Your Claude session and weekly limits show in the menu, with an alert at a level you pick.
+Your Claude session and weekly limits show in the menu, with an alert at a level you pick, once per limit until it resets.
 
 ### Battery and heat safety
 

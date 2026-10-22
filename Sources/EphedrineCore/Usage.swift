@@ -78,7 +78,14 @@ public func usageLevel(percent: Double, severity: String? = nil) -> UsageLevel {
 /// Decides when to post a "usage at N%" notification: once when a limit
 /// crosses the threshold, and again if a *new* reset window starts while it's
 /// still above. Keyed per limit, so new limits (e.g. "Fable only") just work.
-public struct UsageAlertTracker {
+/// Two resets this close together are the same window: resets_at can move a
+/// little between fetches, and a new window is hours or days away.
+public let usageWindowSlack: TimeInterval = 30 * 60
+
+/// Which usage limits to notify about: once per limit per reset window (or,
+/// with no reset time, once per crossing). Codable so it survives a relaunch:
+/// on 2026-10-18 each of 21 launches re-sent "Fable only 80%".
+public struct UsageAlertTracker: Codable, Equatable {
     private var wasAbove: [String: Bool] = [:]
     private var alertedWindow: [String: Date] = [:]
 
@@ -90,10 +97,16 @@ public struct UsageAlertTracker {
         var fire: [UsageLimit] = []
         for l in limits {
             let above = l.percent >= Double(threshold)
-            let newWindow = l.resetsAt != nil && alertedWindow[l.key] != nil && l.resetsAt != alertedWindow[l.key]
-            if above && (wasAbove[l.key] != true || newWindow) {
+            let due: Bool
+            if let r = l.resetsAt {
+                // Hovering at the line, or a reset that moved a little: already told.
+                due = above && !(alertedWindow[l.key].map { abs($0.timeIntervalSince(r)) < usageWindowSlack } ?? false)
+            } else {
+                due = above && wasAbove[l.key] != true
+            }
+            if due {
                 fire.append(l)
-                alertedWindow[l.key] = l.resetsAt
+                if let r = l.resetsAt { alertedWindow[l.key] = r }
             }
             wasAbove[l.key] = above
         }
