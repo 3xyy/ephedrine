@@ -133,8 +133,8 @@ cmd_uninstall() {
         sudo -n /usr/bin/pmset -a disablesleep 0 2>/dev/null && rm -f "$DATA/lid-sleep-disabled"
     fi
     # Same for a Low Power Mode it turned on.
-    if [ -f "$DATA/low-power-on" ]; then
-        sudo -n /usr/bin/pmset -b lowpowermode 0 2>/dev/null && rm -f "$DATA/low-power-on"
+    if [ -f "$DATA/low-power-on" ] || [ -f "$DATA/low-power-kept" ]; then
+        sudo -n /usr/bin/pmset -b lowpowermode 0 2>/dev/null && rm -f "$DATA/low-power-on" "$DATA/low-power-kept"
     fi
     echo "  Kept the log ($DATA) and settings (defaults delete $BUNDLE_ID removes them)."
     echo "  A cmux or hotspot password you saved stays in your login keychain. To remove it:"

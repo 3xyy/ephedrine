@@ -25,12 +25,23 @@ public func lowPowerCause(holding: Bool, lidHold: Bool, onLidShut: Bool, onBatte
 public enum LowPowerAction: Equatable { case turnOn(LowPowerCause), turnOff }
 
 /// On only when a cause holds and the mode is off and not already ours; off
-/// only when it's ours and no cause holds. A mode someone else switched on is
-/// never ours, so it's never switched off.
-public func lowPowerStep(cause: LowPowerCause?, modeOn: Bool, ours: Bool) -> LowPowerAction? {
+/// only when it's ours, no cause holds, and the battery isn't low (`keep`,
+/// lowPowerKeep). A mode someone else switched on is never ours, so it's
+/// never switched off.
+public func lowPowerStep(cause: LowPowerCause?, modeOn: Bool, ours: Bool, keep: Bool = false) -> LowPowerAction? {
     if let c = cause, !modeOn, !ours { return .turnOn(c) }
-    if cause == nil, ours { return .turnOff }
+    if cause == nil, ours, !keep { return .turnOff }
     return nil
+}
+
+/// On battery under the Low Power level, Low Power Mode that Ephedrine switched
+/// on stays on, whatever ends: keeping the Mac awake, the battery limit,
+/// sleep, or Ephedrine quitting. Turning it off there is never wanted
+/// (2026-10-22: it went off at 29% when Ephedrine restarted). It goes off once
+/// plugged in or charged back above the level. `floor` 0 = the level is off.
+public func lowPowerKeep(onBattery: Bool, percent: Int?, floor: Int) -> Bool {
+    guard floor > 0, onBattery, let p = percent else { return false }
+    return p < floor
 }
 
 /// Critical heat: keep nothing awake, so the Mac can cool down and sleep.

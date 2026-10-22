@@ -306,7 +306,7 @@ struct SleepPane: View {
                     }
                     .disabled(settings.batteryFloor >= lidOnlyPluggedIn)
                     SettingsRow("Low Power Mode below",
-                                subtitle: "While Ephedrine keeps the Mac awake on battery, it turns Low Power Mode on below this level or when the Mac runs hot, and off again once that's over. If you turned it on yourself, it stays on. Needs lid-closed setup.") {
+                                subtitle: "While Ephedrine keeps the Mac awake on battery, it turns Low Power Mode on below this level or when the Mac runs hot, and off again once that's over. Under this level it stays on until you plug in, even after Ephedrine stops keeping the Mac awake. If you turned it on yourself, it stays on. Needs lid-closed setup.") {
                         Picker("Low Power Mode below", selection: $settings.lowPowerFloor) {
                             ForEach([50, 40, 30], id: \.self) { Text("\($0)%").tag($0) }
                             Text("Off").tag(0)

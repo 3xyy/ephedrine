@@ -219,3 +219,18 @@ import Testing
     #expect(!off2(0)); #expect(!on2(2)); #expect(!off2(3))   // an "on" reading in between starts over
     #expect(!off2(5.9)); #expect(off2(6))
 }
+
+@Test func lowPowerModeStaysOnWhileTheBatteryIsLow() {
+    // 2026-10-22 12:01: Ephedrine's Low Power Mode went off at 29% when it
+    // restarted, and it would have at the battery limit too, when it stops
+    // keeping the Mac awake. On battery under the Low Power level it stays on.
+    #expect(lowPowerKeep(onBattery: true, percent: 29, floor: 40))
+    #expect(lowPowerStep(cause: nil, modeOn: true, ours: true, keep: true) == nil)
+    // Plugged in, or charged back above the level: off as before.
+    #expect(!lowPowerKeep(onBattery: false, percent: 29, floor: 40))
+    #expect(!lowPowerKeep(onBattery: true, percent: 40, floor: 40))
+    #expect(lowPowerStep(cause: nil, modeOn: true, ours: true, keep: false) == .turnOff)
+    // The level set to off, or a battery that can't be read: nothing kept.
+    #expect(!lowPowerKeep(onBattery: true, percent: 29, floor: 0))
+    #expect(!lowPowerKeep(onBattery: true, percent: nil, floor: 40))
+}

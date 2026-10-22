@@ -170,6 +170,9 @@ let lidSwitch = SerialSwitch(label: "ephedrine.lid", apply: setSleepDisabled)
 // on the charger an owner's "Only on Battery" mode would read as off.
 
 let lowPowerMarkerPath = "\(home)/.claude/ephedrine/low-power-on"   // exists ⇔ we turned it on; holds the cause
+/// Ours, left on at quit for a low battery (lowPowerKeep). The watchdog doesn't
+/// read it, so it can't undo that; the next launch takes it back as ours.
+let lowPowerKeptPath = "\(home)/.claude/ephedrine/low-power-kept"
 
 /// Flip the battery profile's Low Power Mode through the sudoers rule. `-n`: never prompts.
 func setLowPowerMode(_ on: Bool) -> Bool {
@@ -642,6 +645,11 @@ extension AppController {
         let now = Date()
         let settled = batterySettle.step(onBattery: onInternalBattery(), now: now)
         if !lidSetupOK { lowPowerRuleOK = nil }   // asked again once setup is back
+        // Left on at the last quit for a low battery: ours again, so it goes off once plugged in.
+        if fm.fileExists(atPath: lowPowerKeptPath) {
+            if fm.fileExists(atPath: lowPowerMarkerPath) { try? fm.removeItem(atPath: lowPowerKeptPath) }
+            else { try? fm.moveItem(atPath: lowPowerKeptPath, toPath: lowPowerMarkerPath); updateWatchdog() }
+        }
         let ours = fm.fileExists(atPath: lowPowerMarkerPath)
         if !ours { lowPowerOffFailures = 0; lowPowerOnAt = nil }
         let modeOn = ProcessInfo.processInfo.isLowPowerModeEnabled
@@ -671,7 +679,8 @@ extension AppController {
         guard !lidApplying else { return }        // a lid flip or a setup removal is running
         checkLowPowerRule(settled: settled)
         guard !lowPowerApplying, !lowPowerChecking, now >= lowPowerRetryAfter else { return }
-        switch lowPowerStep(cause: cause, modeOn: modeOn, ours: ours) {
+        let keep = lowPowerKeep(onBattery: onBattery, percent: percent, floor: settings.lowPowerFloor)
+        switch lowPowerStep(cause: cause, modeOn: modeOn, ours: ours, keep: keep) {
         case .turnOn(let c)?:
             // Only where isLowPowerModeEnabled is the battery profile that `-b`
             // writes, once the rule is known to allow it, and not against an
@@ -767,6 +776,17 @@ extension AppController {
     /// without it nothing of ours is on or on its way.
     func releaseLowPower(_ why: String) {
         guard fm.fileExists(atPath: lowPowerMarkerPath) else { return }
+        // A low battery keeps it on (lowPowerKeep). At quit it's handed over to
+        // the kept marker, out of the watchdog's reach, for the next launch.
+        if lowPowerKeep(onBattery: !onACPower(), percent: batteryPercent(), floor: settings.lowPowerFloor) {
+            if why == "quitting" {
+                try? fm.removeItem(atPath: lowPowerKeptPath)
+                try? fm.moveItem(atPath: lowPowerMarkerPath, toPath: lowPowerKeptPath)
+                updateWatchdog()
+            }
+            logLine("Low Power Mode left on (\(why)): the battery is under \(settings.lowPowerFloor)%")
+            return
+        }
         lowPowerGeneration += 1   // supersedes any flip still finishing
         let result = lowPowerQueue.sync { applyLowPower(false) }
         updateWatchdog()
