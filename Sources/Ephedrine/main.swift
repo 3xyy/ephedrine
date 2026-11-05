@@ -1675,7 +1675,6 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
                            settings.enabled ? "The Mac stays awake while Claude works." : "macOS sleeps as usual. Stay awake and I'm leaving still work.")
         case .settings:
             openSettings()
-            NSApp.activate(ignoringOtherApps: true)
         }
     }
 

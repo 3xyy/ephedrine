@@ -61,6 +61,18 @@ final class SettingsUI: ObservableObject {
     @Published var tmuxTarget = ""            // typed in Claude Code › tmux panes, cleared once added
 }
 
+/// Show one of our windows in front, focused, on the Space the owner is looking at.
+/// Ephedrine is a menu-bar app, so another app is active when the window opens, and
+/// NSApp.activate() only asks that app to step aside: after ⌘, in the status menu the
+/// window came up unfocused behind cmux (macOS 27). The older call still takes focus.
+/// The behaviour flags bring a window left open on another desktop over to this one,
+/// full-screen apps included, rather than leaving it there or switching Spaces.
+func bringForward(_ w: NSWindow) {
+    w.collectionBehavior.formUnion([.moveToActiveSpace, .fullScreenAuxiliary])
+    w.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
+}
+
 /// One window, created on first use and reused.
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
@@ -89,8 +101,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             window = w
         }
         clock.start()
-        NSApp.activate()   // accessory app: bring it forward so the window isn't behind the active app
-        window?.makeKeyAndOrderFront(nil)
+        if let window { bringForward(window) }
     }
 
     // The window is only hidden on close (reused next time), so stop the live

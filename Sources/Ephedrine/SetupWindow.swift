@@ -49,8 +49,7 @@ final class SetupWindowController: NSObject, NSWindowDelegate {
             window = w
         }
         clock.start()
-        NSApp.activate()
-        window?.makeKeyAndOrderFront(nil)
+        if let window { bringForward(window) }
     }
 
     /// Only for Done or the close button. Quitting the app doesn't count as
