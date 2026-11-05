@@ -423,11 +423,16 @@ public struct DetectorBatteryCap {
 /// `maxWait`, and never in a nap, where nothing is scanned.
 public struct DetectorWatch {
     public static let maxWait: TimeInterval = 15
+    /// Scanning on every 3 s tick cost about 10% of a core whenever Claude wasn't working.
+    public static let rescanEvery: TimeInterval = 30
+    /// Idle this long, the Mac can sleep soon (macOS's own timer can be a minute).
+    public static let idleSoon: TimeInterval = 30
     /// What the last answer found running, nil for nothing (or no answer yet).
     public private(set) var label: String?
     private var answered = false
     private var generation = 0
     private var waitingSince: Date?
+    private var lastScanAt: Date?
 
     public init() {}
 
@@ -437,8 +442,20 @@ public struct DetectorWatch {
         generation += 1   // a scan already running answers for before the hold
     }
 
+    /// Whether to start a scan this tick. Every tick until one answers after a
+    /// hold, and every tick while nothing is found and the Mac could sleep soon
+    /// (the owner idle, or the sleep countdown near its end), so something started
+    /// a moment ago still keeps it awake. Not while a usage-limit wait or Claude
+    /// seen on screen holds it anyway (`othersHold`): that can last hours.
+    /// Otherwise every `rescanEvery`.
+    public func scanDue(now: Date, userIdle: TimeInterval, sleepSoon: Bool, othersHold: Bool) -> Bool {
+        guard answered, let last = lastScanAt else { return true }
+        if label == nil && !othersHold && (sleepSoon || userIdle >= Self.idleSoon) { return true }
+        return now.timeIntervalSince(last) >= Self.rescanEvery
+    }
+
     /// A scan is starting. Pass the token back to `answer`.
-    public func scanStarting() -> Int { generation }
+    public mutating func scanStarting(now: Date) -> Int { lastScanAt = now; return generation }
 
     public mutating func answer(token: Int, label: String?) {
         guard token == generation else { return }

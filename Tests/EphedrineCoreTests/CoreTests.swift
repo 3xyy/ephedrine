@@ -890,18 +890,45 @@ private func stuck(_ w: inout LidSleepWatch, at t: TimeInterval, closed: Bool = 
         w.waiting(wasBlocked: wasBlocked, fullyAwake: fullyAwake, now: now)
     }
     w.hold()                                                     // Claude working
-    let token = w.scanStarting()                                 // first tick after: a scan starts
+    let token = w.scanStarting(now: t0)                                 // first tick after: a scan starts
     #expect(waits(wasBlocked: true, fullyAwake: true, now: t0))
     w.answer(token: token, label: "A monitor is open")
     #expect(!waits(wasBlocked: true, fullyAwake: true, now: t0 + 3))
     #expect(w.label == "A monitor is open")                      // the detector takes over, no gap
 
     w.hold()                                                     // Claude again, then nothing running
-    let t1 = w.scanStarting()
+    let t1 = w.scanStarting(now: t0)
     #expect(waits(wasBlocked: true, fullyAwake: true, now: t0 + 100))
     w.answer(token: t1, label: nil)
     #expect(!waits(wasBlocked: true, fullyAwake: true, now: t0 + 103))
     #expect(w.label == nil)                                      // now it's finished
+}
+
+@Test func detectorsScanEvery30sUnlessItMatters() {
+    // Every 3 s tick cost about 10% of a core whenever Claude wasn't working.
+    var w = DetectorWatch()
+    let t0 = Date(timeIntervalSince1970: 1_000_000)
+    func due(_ t: TimeInterval, idle: TimeInterval = 0, sleepSoon: Bool = false, othersHold: Bool = false) -> Bool {
+        w.scanDue(now: t0 + t, userIdle: idle, sleepSoon: sleepSoon, othersHold: othersHold)
+    }
+    #expect(due(0))                                         // never scanned
+    w.hold()
+    let tok = w.scanStarting(now: t0)
+    #expect(due(3))                                         // after a hold: every tick until it answers
+    w.answer(token: tok, label: nil)
+    #expect(!due(3))                                        // owner at the Mac, nothing found: wait
+    #expect(!due(DetectorWatch.rescanEvery - 1))
+    #expect(due(DetectorWatch.rescanEvery))                 // the 30 s cadence
+    #expect(due(3, idle: DetectorWatch.idleSoon))           // owner away: the Mac could sleep, every tick
+    #expect(!due(3, idle: DetectorWatch.idleSoon - 1))
+    #expect(due(3, sleepSoon: true))                        // countdown near its end
+    #expect(!due(3, idle: 600, othersHold: true))           // a limit wait holds it for hours: no rush
+    #expect(!due(3, sleepSoon: true, othersHold: true))
+
+    let t2 = w.scanStarting(now: t0 + 40)                   // something is running now
+    w.answer(token: t2, label: "A download or file transfer is running")
+    #expect(!due(43, idle: 600, sleepSoon: true))           // it holds the Mac: no hurry to look again
+    #expect(due(40 + DetectorWatch.rescanEvery, idle: 600))
 }
 
 @Test func detectorWaitHasLimits() {
@@ -921,7 +948,7 @@ private func stuck(_ w: inout LidSleepWatch, at t: TimeInterval, closed: Bool = 
 
     // A scan that started before a hold answers for back then, not after it.
     w.hold()
-    let old = w.scanStarting()
+    let old = w.scanStarting(now: t0)
     w.hold()
     w.answer(token: old, label: "An SSH session is open")
     #expect(w.label == nil)

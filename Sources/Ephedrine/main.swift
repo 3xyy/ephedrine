@@ -421,12 +421,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
         let busy = activeSessionCount() > 0
         let manualActive = !mustStop && (manualKeepAwake || keepAwakeUntil != nil)
+        let claudeWorkingNow = settings.keepAwakeClaudeWorking && claudeWorkingCached
+        let limitWaitNow = settings.autoResumeLimit && limitWaitPending
+        let idle = hidIdleSeconds()
         var extraActive = false
         var detectorsPending = false   // Claude just stopped and the detectors haven't answered yet
         if settings.enabled && !busy && !manualActive && !settings.detectors.isEmpty {
             // Detectors spawn `ps`, so they run off-main; evaluate uses the
-            // result of the previous scan (≤1 tick stale; the lease-based
-            // logic has minutes of slack). Not rescanned in a nap: a command
+            // last finished scan, every 30 s or every tick when it matters
+            // (DetectorWatch.scanDue). Not rescanned in a nap: a command
             // seen for one nap flipped "work finished" and the countdown.
             detectorsPending = detectorWatch.waiting(wasBlocked: wasBlocked, fullyAwake: fullyAwake, now: Date())
             let found = detectorWatch.label != nil
@@ -436,10 +439,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
                 logLine("on battery: \(extraActiveLabel ?? "a background task") kept the Mac awake for an hour, letting it sleep")
             }
             if extraActive || !found { detectorCapLogged = false }
-            if !detectorScanInFlight && fullyAwake {
+            let sleepSoon = pendingSleepAt != nil || (armed && settings.finishMode != .stayNormal && graceRemaining() <= 60)
+            if !detectorScanInFlight && fullyAwake && detectorWatch.scanDue(now: Date(), userIdle: idle, sleepSoon: sleepSoon,
+                                                                            othersHold: claudeWorkingNow || limitWaitNow) {
                 detectorScanInFlight = true
                 let keys = settings.detectors
-                let token = detectorWatch.scanStarting()
+                let token = detectorWatch.scanStarting(now: Date())
                 DispatchQueue.global(qos: .utility).async { [weak self] in
                     let ps = PSCache()   // one ps spawn per format, shared by all detectors
                     let hit = self?.detectors.first { keys.contains($0.key) && $0.check(ps) }?.label
@@ -455,10 +460,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         }
         extraActiveLabel = detectorWatch.label
         extraActiveHolding = extraActive
-        let claudeWorkingNow = settings.keepAwakeClaudeWorking && claudeWorkingCached
-        let limitWaitNow = settings.autoResumeLimit && limitWaitPending
         let lidShutAlone = lidClosedNow() && !externalDisplayActive()
-        let idle = hidIdleSeconds()
         // Lid mode, unlike keep-awake, holds a usage-limit wait whenever the lid
         // could close on it (limitWaitHoldsLid).
         let limitWaitLid = settings.autoResumeLimit && limitWaitHoldsLid(
