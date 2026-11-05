@@ -196,3 +196,15 @@ private func cmuxState(installed: Bool = true, running: Bool = true, password: C
     #expect(cmuxState(access: .badPassword, watched: false) == .notWatched)
     #expect(cmuxState(access: .needsPassword, watched: false) == .notWatched)
 }
+
+@Test func cmuxMenuWarnsWhileItCantGetIn() {
+    // Oct 22 to Nov 3: the password was unreadable and only a quiet row said so.
+    #expect(cmuxMenuWarning(cmuxState(password: .unreadable(-25293))) == "Not watching cmux: the saved password can't be read")
+    #expect(cmuxMenuWarning(cmuxState(access: .badPassword)) == "Not watching cmux: its password wasn't accepted")
+    // Nothing for the owner to fix: no warning.
+    #expect(cmuxMenuWarning(cmuxState(running: false, password: .unreadable(-25293))) == nil)   // cmux closed
+    #expect(cmuxMenuWarning(cmuxState(installed: false)) == nil)
+    #expect(cmuxMenuWarning(cmuxState(access: .ok)) == nil)
+    #expect(cmuxMenuWarning(cmuxState(password: .none)) == nil)                     // never set up: the row invites it
+    #expect(cmuxMenuWarning(cmuxState(access: nil)) == nil)                         // checking
+}

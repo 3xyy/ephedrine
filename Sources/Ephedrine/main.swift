@@ -854,7 +854,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
     func userNotificationCenter(_ c: UNUserNotificationCenter, didReceive resp: UNNotificationResponse,
                                 withCompletionHandler done: @escaping () -> Void) {
         if resp.notification.request.identifier == "ka_cmuxpassword" {
-            settingsWindow.show(settings: settings, controller: self, pane: .claude)
+            openCmuxSettings()
         }
         if resp.actionIdentifier == "STAY_AWAKE" {
             cancelPendingSleep()
@@ -1422,6 +1422,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             out.append("Low Power Mode is stuck on. Re-run lid setup, or turn it off in System Settings, Battery.")
         }
         if !hotspotName.isEmpty && hotspotPassword == .unreadable { out.append("Hotspot password needs re-entering in Settings") }
+        if let w = cmuxMenuWarning(cmuxRowState) { out.append(w) }
         out += browserWarnings()
         return out
     }
@@ -1432,8 +1433,14 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
             menu.addItem(item("Re-run lid setup to allow Low Power Mode", #selector(setupLid),
                               tip: "Adds Low Power Mode to what Ephedrine may switch. Asks for your password once.", symbol: "arrow.clockwise"))
         }
+        if cmuxMenuWarning(cmuxRowState) != nil {
+            menu.addItem(item("Enter the cmux password again", #selector(openCmuxSettings),
+                              tip: "Opens Settings › Claude Code. Until then Ephedrine doesn't watch cmux or type “continue” there.", symbol: "key"))
+        }
         addBrowserItems(to: menu)
     }
+
+    @objc func openCmuxSettings() { settingsWindow.show(settings: settings, controller: self, pane: .claude) }
 
     /// Everything the status card shows. Watts and Wi-Fi are read here, when the menu opens, never on a timer.
     func menuStatus() -> MenuStatus {

@@ -38,6 +38,17 @@ public func cmuxRowState(installed: Bool, running: Bool, password: CmuxSavedPass
     }
 }
 
+/// The menu's warning while cmux runs but Ephedrine can't get in, so nothing
+/// there is watched: no "continue", no usage-limit waits. The quiet row and one
+/// notification went unnoticed for 12 days (Oct 22 to Nov 3, 2026).
+public func cmuxMenuWarning(_ state: CmuxRowState) -> String? {
+    switch state {
+    case .unreadablePassword: return "Not watching cmux: the saved password can't be read"
+    case .badPassword: return "Not watching cmux: its password wasn't accepted"
+    default: return nil
+    }
+}
+
 public struct FeatureSnapshot {
     /// `claudeCanHoldLid`: Claude working would keep the Mac awake with the lid
     /// shut right now (see claudeCanHoldLid in Lid.swift). `foreignNoSleep`:
