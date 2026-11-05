@@ -170,7 +170,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
 
     // transient state
     var wasBlocked = false
-    var extraActiveCached = false
+    var detectorWatch = DetectorWatch()
     var extraActiveHolding = false                  // a detector is active and still within its hour on battery
     var detectorCap = DetectorBatteryCap()
     var detectorCapLogged = false
@@ -422,35 +422,38 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         let busy = activeSessionCount() > 0
         let manualActive = !mustStop && (manualKeepAwake || keepAwakeUntil != nil)
         var extraActive = false
+        var detectorsPending = false   // Claude just stopped and the detectors haven't answered yet
         if settings.enabled && !busy && !manualActive && !settings.detectors.isEmpty {
             // Detectors spawn `ps`, so they run off-main; evaluate uses the
             // result of the previous scan (≤1 tick stale; the lease-based
             // logic has minutes of slack). Not rescanned in a nap: a command
             // seen for one nap flipped "work finished" and the countdown.
-            extraActive = detectorCap.allows(active: extraActiveCached, onBattery: !onACPower(), now: Date())
-            if extraActiveCached && !extraActive && !detectorCapLogged {
+            detectorsPending = detectorWatch.waiting(wasBlocked: wasBlocked, fullyAwake: fullyAwake, now: Date())
+            let found = detectorWatch.label != nil
+            extraActive = detectorCap.allows(active: found, onBattery: !onACPower(), now: Date())
+            if found && !extraActive && !detectorCapLogged {
                 detectorCapLogged = true
                 logLine("on battery: \(extraActiveLabel ?? "a background task") kept the Mac awake for an hour, letting it sleep")
             }
-            if extraActive || !extraActiveCached { detectorCapLogged = false }
+            if extraActive || !found { detectorCapLogged = false }
             if !detectorScanInFlight && fullyAwake {
                 detectorScanInFlight = true
                 let keys = settings.detectors
+                let token = detectorWatch.scanStarting()
                 DispatchQueue.global(qos: .utility).async { [weak self] in
                     let ps = PSCache()   // one ps spawn per format, shared by all detectors
                     let hit = self?.detectors.first { keys.contains($0.key) && $0.check(ps) }?.label
                     DispatchQueue.main.async {
-                        self?.extraActiveCached = hit != nil
-                        self?.extraActiveLabel = hit
+                        self?.detectorWatch.answer(token: token, label: hit)
                         self?.detectorScanInFlight = false
                     }
                 }
             }
         } else {
-            extraActiveCached = false
-            extraActiveLabel = nil
+            detectorWatch.hold()
             _ = detectorCap.allows(active: false, onBattery: false, now: Date())   // a fresh hour next time
         }
+        extraActiveLabel = detectorWatch.label
         extraActiveHolding = extraActive
         let claudeWorkingNow = settings.keepAwakeClaudeWorking && claudeWorkingCached
         let limitWaitNow = settings.autoResumeLimit && limitWaitPending
@@ -460,7 +463,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUs
         // could close on it (limitWaitHoldsLid).
         let limitWaitLid = settings.autoResumeLimit && limitWaitHoldsLid(
             resumeAts: limitResumeAts, now: Date(), onBattery: !onACPower(), lidShut: lidShutAlone, userIdle: idle)
-        let blocked = busy || extraActive || claudeWorkingNow || limitWaitNow
+        let blocked = busy || extraActive || claudeWorkingNow || limitWaitNow || detectorsPending
         let claudeNeeds = busy || claudeWorkingNow || limitWaitLid || (autoContinue && retryPending)
         // Before lid mode: at the floor with the lid shut, Claude is paused before the Mac sleeps.
         stepBatteryPause(lidShutAlone: lidShutAlone, idle: idle, claudeBusy: busy || claudeWorkingNow, percent: charge)

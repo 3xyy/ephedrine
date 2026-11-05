@@ -881,6 +881,53 @@ private func stuck(_ w: inout LidSleepWatch, at t: TimeInterval, closed: Bool = 
     #expect(!limitWaitHolds(resumeAts: [], now: now, onBattery: false))
 }
 
+@Test func detectorsAnswerBeforeWorkCountsAsFinished() {
+    // Oct 22 to Nov 5: Claude stopped, the first tick had no detector answer and
+    // armed the sleep countdown, and the answer cancelled it 3 s later.
+    var w = DetectorWatch()
+    let t0 = Date(timeIntervalSince1970: 1_000_000)
+    func waits(wasBlocked: Bool, fullyAwake: Bool, now: Date) -> Bool {
+        w.waiting(wasBlocked: wasBlocked, fullyAwake: fullyAwake, now: now)
+    }
+    w.hold()                                                     // Claude working
+    let token = w.scanStarting()                                 // first tick after: a scan starts
+    #expect(waits(wasBlocked: true, fullyAwake: true, now: t0))
+    w.answer(token: token, label: "A monitor is open")
+    #expect(!waits(wasBlocked: true, fullyAwake: true, now: t0 + 3))
+    #expect(w.label == "A monitor is open")                      // the detector takes over, no gap
+
+    w.hold()                                                     // Claude again, then nothing running
+    let t1 = w.scanStarting()
+    #expect(waits(wasBlocked: true, fullyAwake: true, now: t0 + 100))
+    w.answer(token: t1, label: nil)
+    #expect(!waits(wasBlocked: true, fullyAwake: true, now: t0 + 103))
+    #expect(w.label == nil)                                      // now it's finished
+}
+
+@Test func detectorWaitHasLimits() {
+    var w = DetectorWatch()
+    let t0 = Date(timeIntervalSince1970: 1_000_000)
+    func waits(wasBlocked: Bool, fullyAwake: Bool, now: Date) -> Bool {
+        w.waiting(wasBlocked: wasBlocked, fullyAwake: fullyAwake, now: now)
+    }
+    w.hold()
+    #expect(!waits(wasBlocked: true, fullyAwake: false, now: t0))   // a nap scans nothing: don't wait
+    w.hold()
+    #expect(!waits(wasBlocked: false, fullyAwake: true, now: t0))   // nothing was held: nothing to keep
+    w.hold()
+    #expect(waits(wasBlocked: true, fullyAwake: true, now: t0))
+    #expect(waits(wasBlocked: true, fullyAwake: true, now: t0 + DetectorWatch.maxWait - 1))
+    #expect(!waits(wasBlocked: true, fullyAwake: true, now: t0 + DetectorWatch.maxWait))   // ps stuck: stop waiting
+
+    // A scan that started before a hold answers for back then, not after it.
+    w.hold()
+    let old = w.scanStarting()
+    w.hold()
+    w.answer(token: old, label: "An SSH session is open")
+    #expect(w.label == nil)
+    #expect(waits(wasBlocked: true, fullyAwake: true, now: t0 + 500))
+}
+
 @Test func detectorsGetAnHourOnBattery() {
     // 2026-10-09: a detector held the Mac awake for 12.6 hours.
     var cap = DetectorBatteryCap()

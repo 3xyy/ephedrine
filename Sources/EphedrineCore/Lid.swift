@@ -412,6 +412,49 @@ public struct DetectorBatteryCap {
     }
 }
 
+/// The detectors' last answer. A scan is three `ps` runs (about 0.3 s of CPU), so
+/// it runs off the main thread, and only while nothing else holds the Mac: not
+/// while Claude works or Stay awake is on, when the answer is thrown away.
+///
+/// Straight after such a hold there's no answer yet. Counting that as "nothing
+/// running" armed the sleep countdown, and the scan started on that tick cancelled
+/// it 3 s later (at least 39 times from Oct 22 to Nov 5, pre-sleep notification and all).
+/// So the Mac stays held until the first scan after the hold answers: at most
+/// `maxWait`, and never in a nap, where nothing is scanned.
+public struct DetectorWatch {
+    public static let maxWait: TimeInterval = 15
+    /// What the last answer found running, nil for nothing (or no answer yet).
+    public private(set) var label: String?
+    private var answered = false
+    private var generation = 0
+    private var waitingSince: Date?
+
+    public init() {}
+
+    /// Claude or Stay awake holds the Mac, or the detectors are off.
+    public mutating func hold() {
+        label = nil; answered = false; waitingSince = nil
+        generation += 1   // a scan already running answers for before the hold
+    }
+
+    /// A scan is starting. Pass the token back to `answer`.
+    public func scanStarting() -> Int { generation }
+
+    public mutating func answer(token: Int, label: String?) {
+        guard token == generation else { return }
+        self.label = label; answered = true
+    }
+
+    /// No answer since the hold ended yet, so keep holding: only when the Mac was
+    /// held on the previous tick and is fully awake, and for at most `maxWait`.
+    public mutating func waiting(wasBlocked: Bool, fullyAwake: Bool, now: Date) -> Bool {
+        if answered { return false }
+        let since = waitingSince ?? now
+        waitingSince = since
+        return wasBlocked && fullyAwake && now.timeIntervalSince(since) < Self.maxWait
+    }
+}
+
 /// The version of the sudoers rule this build installs (2 added Low Power Mode).
 public let lidRuleVersion = 2
 
